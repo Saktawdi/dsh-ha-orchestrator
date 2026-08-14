@@ -1,0 +1,6 @@
+# 统一 LF 行尾（Windows 开发机上也保持仓库内 LF）
+* text=auto eol=lf
+
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf

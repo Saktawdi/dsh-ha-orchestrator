@@ -1,0 +1,49 @@
+# ===== 依赖与构建产物 =====
+node_modules/
+dist/
+build/
+*.tgz
+*.tsbuildinfo
+
+# ===== 日志与临时文件 =====
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+tmp/
+.tmp/
+temp/
+
+# ===== 本地派生/生成物（不入库） =====
+raw.json
+*.local
+*.bak
+*.orig
+.archive/
+
+# ===== 运行时配置持久化（插件在运行目录生成） =====
+ha-orchestrator.config.json
+ha-orchestrator.config.backup.json
+
+# ===== 环境变量与密钥（防御性规则） =====
+.env
+.env.*
+!.env.example
+
+# ===== 测试与静态检查产物 =====
+coverage/
+.eslintcache
+
+# ===== AI 工具本地数据（不入库） =====
+.agent/
+.issues/
+.claude/settings.local.json
+
+# ===== 系统与编辑器 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
