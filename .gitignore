@@ -14,18 +14,16 @@ tmp/
 .tmp/
 temp/
 
-# ===== 本地派生/生成物（不入库） =====
-raw.json
+# ===== 本地派生/生成物 =====
 *.local
 *.bak
 *.orig
-.archive/
 
 # ===== 运行时配置持久化（插件在运行目录生成） =====
 ha-orchestrator.config.json
 ha-orchestrator.config.backup.json
 
-# ===== 环境变量与密钥（防御性规则） =====
+# ===== 环境变量与密钥 =====
 .env
 .env.*
 !.env.example
@@ -34,9 +32,11 @@ ha-orchestrator.config.backup.json
 coverage/
 .eslintcache
 
-# ===== AI 工具本地数据（不入库） =====
+# ===== AI 工具本地数据 =====
 .agent/
 .issues/
+.omo/
+.codegraph/
 .claude/settings.local.json
 
 # ===== 系统与编辑器 =====

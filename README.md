@@ -1,189 +1,107 @@
-![HA Orchestrator config page](docs/task-mssrt54p4pq39.png)
+![HA Orchestrator settings page](docs/settings.png)
 
 # HA Orchestrator
 
-> *Model outages end long runs. Not anymore.*
-
-[![Version](https://img.shields.io/badge/version-v0.1.0-4d6bfe?style=flat-square)](README.md)
+[![Version](https://img.shields.io/badge/version-v0.2.0-4d6bfe?style=flat-square)](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.2.0)
 [![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square)](https://github.com/deepseek-ai/dsh)
-[![Type](https://img.shields.io/badge/type-Dynamic%20Cordis%20Plugin-4d6bfe?style=flat-square)](#installation)
-[![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen?style=flat-square)](#project-structure)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
-<br>
+HA Orchestrator is a plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) (dsh):
 
-**HA Orchestrator** is a dynamic Cordis plugin for DeepSeek Harness (dsh) that keeps
-agent runs alive when models fail, and gives the main agent a planning–executing–supervising
-loop.
+- When a model call fails mid-run, it retries on a backup model and the run continues.
+- It adds an `orchestrate` tool that the model calls on its own when a task suits it, splitting work across subagents in parallel (`fanout`), in stages (`pipeline`), or with a review pass (`supervisor`).
 
-<br>
+The settings page also lets you define custom subagents (or generate one with AI), and the UI and prompt copy are available in Chinese and English, following your DSH language.
 
-**🛡️ Model high-availability failover** — when a model errors mid-run, the failing model is
-quarantined (with cooldown), the request is retried on a backup model, and the run continues
-where it stopped. No manual intervention.
+[简体中文](README.zh-CN.md)
 
-**🧩 Subagent orchestration** — one `orchestrate` tool with three modes:
-`fanout` (parallel + merge), `pipeline` (sequential stages), `supervisor` (parallel, then a
-supervising agent synthesizes).
+## What it does
 
-**🤖 Custom subagents** — define name / model / description / system prompt in the config page,
-assign by name from any task, or generate a subagent with AI in one click.
+### Failover when a model fails
 
-[**简体中文**](README.zh-CN.md) · [Highlights](#highlights) · [How it works](#how-it-works) · [Installation](#installation) · [Usage](#usage) · [Documentation](#documentation)
+- When a model request errors, it is retried on the next backup model. Backups are tried in order.
+- The failed model is temporarily skipped and cools down; it comes back on its own when the cooldown expires.
+- Each failure episode has a retry budget. Once it is spent, the plugin stops retrying instead of looping forever.
+- If a model error interrupts the run, the plugin restarts the task once so the work is not lost.
 
-</div>
+Backup models, cooldown, failure threshold, and error-code filter are configurable in Settings → "HA 与编排".
 
----
+### Orchestration, triggered automatically
 
-## Highlights
+The `orchestrate` tool is available in every session. Its description and a hint in the system prompt tell the model to call it on its own when a task has parallel parts, runs in stages, or needs a review pass:
 
-- **🛡️ Model high availability.** Listens at the outermost layer of the request waterfall
-  (`agent/request` + `agent/request-error`, `prepend: true`), so it holds the final say. A
-  failure (error-code match, empty = all) quarantines the failing model for `cooldownMs`, then
-  returns `{kind: 'retry'}`; the loop re-issues the request on the next backup model and the
-  session header persists the new model for subsequent steps. Backups rotate round-robin per
-  agent and skip unregistered providers (no `NO_ADAPTER` cascade).
-- **↩️ Stop recovery.** If a model error interrupts the run (`agent/error`), the failing model
-  is quarantined first, then `agent.steer` restarts the run 300ms later — once the driver has
-  rolled back to idle — and keeps the task going. One steer per turn.
-- **🧩 Orchestration.** `orchestrate` is a per-agent scoped tool built on
-  `subagents.start` with a bounded concurrency pool, a task cap (`maxAgents`), and cancellation
-  propagation. The tool description always lists the currently configured custom subagents.
-- **🤖 Custom subagents.** Each definition carries **name / model / description / system
-  prompt**. Tasks pick them by name (`tasks[].agent`, top-level `agent`, `supervisorAgent`);
-  the model routes through `agentOptions` and the persona through `request.persona`.
-- **✨ AI-generated subagents.** Hit 「智能新增」 in the config page, describe what you need,
-  and the host uses the current default model to generate a full definition (name/model/
-  description/system prompt) — JSON-parsed, deduplicated, and prefilled into the edit form.
-- **🎛️ Visual config page.** Settings → "HA 与编排": backup list with an add-from-config
-  picker, cooldown / threshold / error-code / steering knobs, quarantine table and switch
-  history. The Run card shows a live HA status strip.
-- **🎨 OpenDesign tokens.** The config page consumes global OpenDesign semantic tokens
-  (`--dsw-alias-*`) — correct colors in both light and dark themes, no design-package dependency.
+- `fanout` — split the task, run subtasks in parallel, merge the results.
+- `pipeline` — run stages one after another; each stage's output feeds the next.
+- `supervisor` — run subtasks in parallel, then let a supervising subagent review and merge them.
 
-## How it works
+If a particular run does not orchestrate on its own, just say "use orchestration".
 
-HA Orchestrator is a **DSH dynamic Cordis plugin** with two halves, deployed as pure JS
-function bodies (`host.js` / `client.js`) — no dependencies, no build step;
+You can also turn off the auto-triggering: in Settings → "HA 与编排" → System card, turn off **context injection**. The model then only orchestrates when you ask for it, for example "use the ha-orchestrator plugin".
 
-**Failover flow.** Error → code matches → count against threshold → quarantine + pick next
-backup (round-robin, skips quarantined / unregistered) → `{kind: 'retry'}` → request re-issued
-on the backup → session header updated → the run continues on the backup model. The failing
-model recovers automatically when its cooldown expires:
+### Custom subagents
 
-![flowchart](docs/flowchart.svg)
+Define reusable subagents in the settings page: name, provider/model, description, and system prompt. Tasks pick them by name, and the model can look up the list at any time. The "AI Generate" button takes a one-sentence requirement and has the current model fill in the full definition.
 
-**Lifecycle.** Config persists to `ha-orchestrator.config.json` (with a
-`ha-orchestrator.config.backup.json` fallback copy) in the plugin directory — restored on startup
-and rewritten on every config change. Quarantine / counters / history stay in host memory and
-reset on plugin update or process restart.
+### Languages
+
+The settings UI and all prompt copy come in Chinese and English. The plugin follows your DSH language selection and falls back to Chinese if a language pack fails to load. You can also pin a language in the "System" card.
 
 ## Installation
 
-HA Orchestrator is a DSH dynamic Cordis plugin — no packages, no build step, just two JS
-function bodies (`host.js` / `client.js`) that the harness runs directly.
+Requirements: [DeepSeek Harness](https://github.com/deepseek-ai/dsh) with the web profile. No build step, no runtime dependencies.
 
-**Step 1, switch to a create-mode (cordis) session.** The `tool-cordis` toolset is only
-assembled in the create mode (cordis) preset — a standard session has no `cordis_define`.
-The plugin is deployed per session; it does not survive restarts.
+### Method 1: manual install
 
-**Step 2, hand it to your AI.** Send it this line:
+1. Clone this repo into your DSH profile: `~/.dsh/profiles/web/node_modules/ha-orchestrator`
+2. Add it to the composition file `~/.dsh/profiles/web/cordis.patch.yml`:
 
-> Deploy the HA Orchestrator plugin: run `cordis_define` (kind: `new`, idPrefix: `haorc`)
-> with `code.host` set to the full contents of `host.js` and `code.client` to the full
-> contents of `client.js` (both in this repository), then `cordis_run` (mode: `run`) and
-> tell me the result.
+   ```yaml
+   - insert:
+       - id: ha-orchestrator
+         name: ha-orchestrator
+   ```
 
-The AI reads both files from the repository, registers the plugin with the harness, and
-starts it.
+3. Restart the DSH web process. The plugin loads at startup and survives restarts.
 
-**Step 3, approve it on the Run card.** The first run of a new Package sits in
-awaiting-approval until you click ✓ — a UI gesture, independent of the session approval
-policy.
+### Method 2: let your AI install it
 
-**Step 4, verify it works.** `Tool.listTools` should contain `orchestrate`; Settings shows
-"HA 与编排"; the HA listeners are visible in the event catalog.
+1. In DSH, switch to **Creator Mode**.
+2. Send the repo link to your agent: `https://github.com/Saktawdi/ha-orchestrator`
+3. Ask it to install the plugin. Restart the DSH web process afterwards.
 
-**Updating later.** `cordis_define` (kind: `existing`) with a new Package → `cordis_run`
-(mode: `update`) — the plugin re-installs with the latest code.
+> **Version note:** [v0.1.0](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.1.0) was the previous dynamic build, deployed per session via `cordis_define` and released only for feature preview. Starting with v0.2.0 the plugin is static and loads with DSH at startup.
 
 ## Usage
 
-Once installed, just talk. The model decides when to orchestrate:
+No special commands. The model decides when to orchestrate:
 
 ```
-You:    帮我调研这三个开源项目，比较许可证和社区活跃度，给出选型建议。
-Model:  (拆解为 3 个独立子任务，调用 orchestrate mode=fanout)
-        → 并行调研 → 汇总对比表 → 给出建议
+You:    Research these three open-source projects, compare licenses and community activity, and recommend one.
+Model:  sees 3 independent subtasks → calls orchestrate (fanout) → parallel research → comparison → recommendation
 
-You:    先做需求分析，再写设计文档，最后写实现计划。
-Model:  (调用 orchestrate mode=pipeline)
-        → 每阶段输出自动成为下一阶段上下文
+You:    Do requirements analysis first, then a design doc, then an implementation plan.
+Model:  calls orchestrate (pipeline) → each stage's output feeds the next
 
-You:    生成一份竞品分析报告，找个资深评审把关。
-Model:  (调用 orchestrate mode=supervisor, supervisorAgent=reviewer)
-        → 并行分析 → 评审合成 → 输出报告
+You:    Write a competitive analysis report and have a senior reviewer vet it.
+Model:  calls orchestrate (supervisor) → parallel analysis → review and merge → report
 ```
 
-**Config page tour** (Settings → "HA 与编排"):
+### Settings
 
-| Area | What you can do |
+Settings → "HA 与编排":
+
+| Card | What you can do |
 | :-- | :-- |
-| 模型高可用 | Toggle, backup list (add from installed providers, reorder, remove), cooldown, failure threshold, error-code filter, persist selection, steer-on-stop, quarantine & history view, reset |
-| 子智能体编排 | Toggle, subagent provider, default concurrency, max agents per run |
-| 自定义子智能体 | CRUD + reorder; name is required, provider/model optional (inherit parent), description shown to the model, system prompt becomes the persona; 「智能新增」 generates one with AI |
-
-## Feature reference
-
-| Feature | Behavior |
-| :-- | :-- |
-| HA failover | Outermost waterfall listeners; quarantine + cooldown + round-robin backup; per-agent rotation cursor; skips unregistered providers |
-| Stop recovery | `agent/error` with model codes → quarantine → delayed `agent.steer` (once per turn) |
-| `orchestrate` tool | `fanout` / `pipeline` / `supervisor`; `tasks[]`, `agent`, `supervisorAgent`, `concurrency`; unknown subagent names rejected with the available list |
-| Custom subagents | name / provider+model (`agentOptions`) / description / system prompt (`persona`); roster auto-refreshed in the tool description on change |
-| AI generation | `agents.generate` RPC: current default model writes the definition, JSON-fenced-output tolerant parsing, name dedup |
-| Config RPCs | `state.get` / `state.set` (sanitized merge) / `models.list` / `agents.generate` / `ha.reset` |
-| Config persistence | JSON file `ha-orchestrator.config.json` + `ha-orchestrator.config.backup.json` under the plugin directory; restored on startup (backup fallback), rewritten on every `state.set` |
-| UI | Settings section (order 12) + Run-card status strip (`tool.view.cordis`, key `self`); OpenDesign semantic tokens |
-
-## Project structure
-
-```
-ha-orchestrator/
-├── host.js               # Host half — code.host function body (deploy verbatim)
-├── client.js             # Client half — code.client function body (deploy verbatim)
-├── README.md             # This file (English)
-├── README.zh-CN.md       # 简体中文
-├── docs/
-│   ├── flowchart.svg     # Rendered diagrams (EN)
-│   └── flowchart-cn.svg  # Rendered diagrams (中文)
-├── .gitignore            # Excludes raw.json, runtime config persistence & generated artifacts
-├── .gitattributes        # LF line endings everywhere
-└── LICENSE               # MIT
-```
-
-`raw.json` (not committed) is a local inspect-export baseline for verifying that
-`host.js` / `client.js` are in sync with the deployed package.
-
-## Documentation
-
-| Doc | Read it when |
-| :-- | :-- |
-| [README.zh-CN.md](README.zh-CN.md) | 中文文档 |
+| Model High Availability | On/off, backup list, cooldown, failure threshold, error-code filter, quarantined models and failover history |
+| Subagent Orchestration | On/off, subagent provider, default concurrency, max subagents per run |
+| Custom Subagents | Add, edit, reorder, delete; "AI Generate" creates one from a description |
+| System | Plugin language (follow system / Chinese / English), the orchestration hint toggle, and the debug card toggle |
 
 ## Notes
 
-- **Config persistence.** Config is stored in `ha-orchestrator.config.json` (plus a
-  `ha-orchestrator.config.backup.json` fallback copy) under the plugin directory; it is restored on
-  startup and rewritten on every change. Quarantine / counters / history remain in-memory and reset
-  on plugin update or process restart.
-- **No dependencies.** Pure JS, no `process` / `fetch` / `require` / `setTimeout` in the sandbox;
-  timing goes through `ctx.get('timer')`.
-- **Per-agent scoped registration.** `orchestrate` is registered per agent (`agent.ctx`) to
-  avoid clashing with stale global registrations from other sessions.
-- **Approval policy is unrelated.** The Run-card ✓ is a UI gesture; it works regardless of the
-  session approval policy.
+- Config is saved to `ha-orchestrator.config.json` in the plugin directory (with a backup copy), restored on startup, and rewritten on every change.
+- Quarantined models, counters, and failover history live in memory and reset on plugin update or process restart.
 
 ## License
 
-MIT © [Sakta_wdi](https://github.com/Sakta_wdi)
+MIT © [Saktawdi](https://github.com/Saktawdi)
