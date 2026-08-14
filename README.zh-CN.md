@@ -61,13 +61,40 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
          name: ha-orchestrator
    ```
 
-3. 重启 DSH web 进程。插件随进程启动自动加载，重启后依然生效。
+3. 无需重启：profile 的 patch 层会被热加载（Cordis HMR），插件在运行中的进程里直接生效。刷新浏览器页面即可看到配置页。插件同样随进程启动自动加载，重启后依然生效。
 
 ### 方法二：让 AI 帮你装
 
 1. 在 DSH 里切换到**创造模式**。
-2. 把仓库链接发给你的 AI：`https://github.com/Saktawdi/ha-orchestrator`
-3. 让它帮你安装插件；安装完成后重启 DSH web 进程生效。
+2. 把仓库链接连同一段提示词发给你的 AI（可参考下述提示词）：
+
+   > 把 **ha-orchestrator** 插件（https://github.com/Saktawdi/ha-orchestrator）安装到 DSH 的 **web profile**（`$DSH_HOME/profiles/web`，默认 `~/.dsh/profiles/web`）。它是一个*静态* Cordis 插件，**没有** `dsh.bundle` 声明，所以不要动 `dsh.profile.bundles`，也不要改 `cordis.yml`（启动时会被重写）。步骤：
+   >
+   > 1. **把包装成真实目录，绝不要用软链接/junction。** Node 的 ESM loader 会把模块解析到真实路径，软链接指向插件源码目录后就找不到它的 peer 依赖（`@deepseek-ai/dsh-tools`、`react` 等）；只有 `$DSH_HOME/profiles/node_modules`（安装 fallback）提供这些包。推荐命令（需要 PATH 里有 pnpm）：
+   >
+   >    ```sh
+   >    dsh plugin --profile web add "file:<插件仓库绝对路径>"
+   >    ```
+   >
+   >    `file:` 协议会把内容快照装进 profile 的 `node_modules` 并记录进 `package.json`（之后执行 `pnpm install` 也不会被清掉）。裸路径或 `link:` 会创建软链接，**运行时必然失败**。如果机器上没有 pnpm，就手动把仓库（排除 `.git` 和 `node_modules`）复制到 `~/.dsh/profiles/web/node_modules/ha-orchestrator/`，并在 profile 的 `package.json` 里补上 `file:` 依赖。
+   >
+   > 2. **激活组合行**：在 `~/.dsh/profiles/web/cordis.patch.yml`（顶层数组，追加）里加：
+   >
+   >    ```yaml
+   >    - insert:
+   >        - id: ha-orchestrator
+   >          name: ha-orchestrator
+   >    ```
+   >
+   > 3. **无需重启进程** —— patch 层会被热加载（Cordis HMR），插件直接生效。用户只需**刷新浏览器页面**让客户端半部（设置 →「HA 与编排」）加载。
+   >
+   > 4. **完成前必须验证**：
+   >    - `dsh --profile web --dump-config` 能看到 `ha-orchestrator` 行。
+   >    - 解析探测：在 profile 目录放一个临时 `probe.mjs`，内容为 `await import('ha-orchestrator')`，应输出 `apply,default,inject,name`（验完删除）。
+   >    - 会话里能看到 `orchestrate` 和 `list-subagents` 工具；调用 `list-subagents` 能返回已配置的子智能体清单。
+   >    - 失败时修根因（包的位置、patch 语法、行 id），重新保存 patch 文件触发 watcher 重载——**不要**靠重启进程"修复"。
+
+3. 安装后插件随 DSH 启动自动加载，重启后依然生效。
 
 > **版本说明：** [v0.1.0](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.1.0) 是上一代动态版（经 `cordis_define` 按会话加载），仅作功能预览；从 v0.2.0 起为静态插件，随 DSH 启动自动加载，本 README 描述的是 v0.2.0 及之后的版本。
 

@@ -61,13 +61,40 @@ Requirements: [DeepSeek Harness](https://github.com/deepseek-ai/dsh) with the we
          name: ha-orchestrator
    ```
 
-3. Restart the DSH web process. The plugin loads at startup and survives restarts.
+3. No restart needed: the profile patch layer is hot-reloaded (Cordis HMR), so the plugin activates in the running process. Refresh the browser page to load the settings UI. The plugin also loads at startup and survives restarts.
 
 ### Method 2: let your AI install it
 
 1. In DSH, switch to **Creator Mode**.
-2. Send the repo link to your agent: `https://github.com/Saktawdi/ha-orchestrator`
-3. Ask it to install the plugin. Restart the DSH web process afterwards.
+2. Send your agent the repo link plus this prompt (it encodes the pitfalls found during real installs — do not let the AI improvise around them):
+
+   > Install the **ha-orchestrator** plugin from https://github.com/Saktawdi/ha-orchestrator into the DSH **web profile** (`$DSH_HOME/profiles/web`, default `~/.dsh/profiles/web`). It is a *static* Cordis plugin **without** a `dsh.bundle` declaration, so do not touch `dsh.profile.bundles` and do not edit `cordis.yml` (it is rewritten at boot). Steps:
+   >
+   > 1. **Install the package as a real directory — never a symlink/junction.** Node's ESM loader resolves a module to its real path, so a symlink pointing at the plugin checkout cannot reach its peer deps (`@deepseek-ai/dsh-tools`, `react`, …); only `$DSH_HOME/profiles/node_modules` (the installation fallback) provides them. Canonical command (needs `pnpm` on PATH):
+   >
+   >    ```sh
+   >    dsh plugin --profile web add "file:<absolute-path-to-repo>"
+   >    ```
+   >
+   >    The `file:` protocol installs a content snapshot into the profile's `node_modules` and records it in `package.json` (so a later `pnpm install` does not prune it). A bare path or `link:` creates a symlink and **fails at runtime**. If pnpm is unavailable, copy the repo (excluding `.git` and `node_modules`) into `~/.dsh/profiles/web/node_modules/ha-orchestrator/` and record the `file:` dependency in the profile `package.json` yourself.
+   >
+   > 2. **Activate the row** in `~/.dsh/profiles/web/cordis.patch.yml` (append to the existing top-level array):
+   >
+   >    ```yaml
+   >    - insert:
+   >        - id: ha-orchestrator
+   >          name: ha-orchestrator
+   >    ```
+   >
+   > 3. **No process restart is needed** — the profile patch layer is hot-reloaded (Cordis HMR) and the plugin activates live. The user only needs to **refresh the browser page** for the client half (Settings → "HA 与编排").
+   >
+   > 4. **Verify before declaring done**:
+   >    - `dsh --profile web --dump-config` lists the `ha-orchestrator` row.
+   >    - Resolution probe: a temporary `probe.mjs` inside the profile dir running `await import('ha-orchestrator')` must print `apply,default,inject,name` (delete it afterwards).
+   >    - In a session, the `orchestrate` and `list-subagents` tools are registered; calling `list-subagents` returns the configured subagent roster.
+   >    - On failure, fix the root cause (package location, patch syntax, row id) and re-save the patch file to re-trigger the watcher — do not "fix" by restarting the process.
+
+3. The plugin then loads at DSH startup and survives restarts.
 
 > **Version note:** [v0.1.0](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.1.0) was the previous dynamic build, deployed per session via `cordis_define` and released only for feature preview. Starting with v0.2.0 the plugin is static and loads with DSH at startup.
 
