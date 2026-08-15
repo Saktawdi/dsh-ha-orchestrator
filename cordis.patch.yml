@@ -1,0 +1,5 @@
+# ha-orchestrator bundle patch: inserted as a profile layer by `dsh plugin add`
+# when this package declares dsh.bundle.patch. Last write wins per row id.
+- insert:
+    - id: ha-orchestrator
+      name: ha-orchestrator
