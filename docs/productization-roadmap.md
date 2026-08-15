@@ -2,7 +2,7 @@
 
 > 版本：草案 v1.0
 > 范围：基于 2026-08 GitHub / npm 生态调研，为 ha-orchestrator 从“个人可用插件”升级为“优秀产品化 DSH 插件”给出路线图。
-> 当前基线：v0.8.0（2026-08-15）。静态 Cordis 插件；源码 TypeScript（`src/`），`lib/` 为 tsc 构建产物（含 `.d.ts`）；160 测试（120 单测 + 40 集成）+ verify 冒烟（6 组）+ GitHub Actions（Linux/Windows 全链路）；HA 持久化/两层熔断/探测恢复/类型化事件、run 持久化/事件/命令/配方/resume、诊断卡片/配置导出导入、docs 8 篇 + CONTRIBUTING + Issue 模板；`dsh plugin add "file:<repo>"` 可安装；npm 发布与 GitHub Release 待环境就绪（gh/npm 未认证）。
+> 当前基线：v0.10.0（2026-08-15）。静态 Cordis 插件；源码 TypeScript（`src/`），`lib/` 为 tsc 构建产物（含 `.d.ts`）；168 测试（123 单测 + 45 集成）+ verify 冒烟（6 组）+ GitHub Actions（Linux/Windows 全链路）；HA 持久化/两层熔断/探测恢复/类型化事件、run 持久化/事件/命令/配方/resume/调用预算、对话内 Run 卡片（官方展示投影 + keyed toolview）、诊断卡片/配置导出导入、docs 8 篇 + CONTRIBUTING + Issue 模板；`dsh plugin add "file:<repo>"` 可安装；npm 发布与 GitHub Release 待环境就绪（gh/npm 未认证）。
 
 ---
 
@@ -220,12 +220,12 @@ ha-orchestrator/
   - 取消语义已基本闭环：`runOne` 强制要求真实 `AbortSignal`（缺失直接拒绝）、`poolRun` 透传、`pipeline` 循环检查 `signal.aborted`、`run.dispose()` 在 finally 回收；
   - 中断后按 runId 恢复未完成子任务已落地（`resume <runId>`：fanout/supervisor 跳过已完成、pipeline 从失败阶段续跑并继承 carry，结果按原任务顺序合并，记录带 `resumedFrom`；旧记录缺 prompt 时明确报错）（v0.6.0）。
 
-### Phase 3：UI / 产品体验（建议 2–3 周，首批 UI 项落地，进行中）
+### Phase 3：UI / 产品体验（建议 2–3 周，核心项已落地，收尾中）
 目标：从“能配置”变成“好用、好看、可信”。
 
-- [ ] **迁移客户端到官方基建**：
-  - 使用 `@deepseek-ai/dsh-client-ui-*` primitives 和 slots，替换手写 `createElement` + 内联 CSS（当前为 lazy-CJS 手写 bundle）——最大块，单独排期；
-  - 接入官方 locale，而不是自己维护 client i18n 快照（当前 client 从 `stateGet` 的 `i18n.dict` 同步字典）。
+- [ ] **迁移客户端到官方基建**（slots 已官方化，剩余低风险渐进项）：
+  - client 已经官方 `ctx.slots` 注册：`settings.section`（设置分区）、`tool.view.cordis`（状态卡）、`tool.call.toolview`（对话内 Run 卡片 key='orchestrate'）（v0.10.0）；`$mount` + TYPERT_REMOTE 描述符为官方装配模式；
+  - 剩余：`dsh-client-ui-primitives` 组件替换手写 `createElement` 小组件、官方 locale 命名空间替代 `stateGet` 字典同步——无浏览器验证手段下暂缓的渐进项。
 - [x] **设置页重构（首批）**：
   - 新增「诊断」折叠卡片：熔断/冷却/探测概览、隔离清单（含 level/剩余时间）、失败计数、游标、探测记录、最近 run，10s 轮询（v0.7.0）；
   - “一键导出/导入配置”已落地：`stateExport`/`stateImport` RPC + 系统卡片导出（复制）/导入（粘贴并应用）区域（v0.7.0）；
@@ -233,7 +233,7 @@ ha-orchestrator/
 - [x] **Run 面板**：
   - 对话流中显示 `orchestrate` 调用卡片：官方展示投影（`presentationMeta`/`presentCall`/`presentResult`）+ `tool.call.toolview` keyed 槽位注册 RunCard——运行中实时子任务数、完成后 runId 标题 + 状态徽章 + 输出摘要（v0.10.0）；
   - 设置页「诊断」卡片已展示最近 run 列表（runId/mode/status）（v0.7.0）。
-- [ ] **可访问性与响应式**：键盘可操作、`prefers-reduced-motion`、窄屏可用（当前 CSS 变量 + 弹性布局已基本响应式；可访问性细化待排期）。
+- [x] **可访问性与响应式**：`prefers-reduced-motion` 降级动画、`:focus-visible` 键盘焦点样式已落地（v0.8.0）；CSS 变量 + 弹性布局已基本响应式。
 - [x] **错误体验**：
   - 安装后无 backups 时，UI 给清晰引导（HA 卡片空状态文案 + 「推荐备份」按钮）（v0.7.0）；
   - 插件加载失败时的可操作诊断：`/ha diag` 命令 + `diagnostics` RPC（服务可用性/持久化/加载状态/语言回滚/注入状态）（v0.9.0）。

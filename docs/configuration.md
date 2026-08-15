@@ -159,15 +159,17 @@
 | `preset` | string | 已保存配方名；命中后从配方加载 mode/tasks/agent，调用参数可覆盖。找不到抛错。 |
 | `resume` | string | 上次中断的 runId；恢复未完成子任务，已完成任务复用其结果（pipeline 从首个未完成阶段续跑）。run 已完成或旧记录缺数据时报错。 |
 | `reviewRounds` | number | supervisor 模式评审轮次：**`Math.max(1, Math.min(3, Number()\|\|1))`，即 1..3**，默认 1。每轮以上一轮输出为上下文重新评审。 |
+| `reviewers` | string[] | supervisor 模式并行评审的自定义子智能体名称数组；每个评审者独立 run，输出并入综合上下文后由 supervisor 合成。名称同样走未知名校验。 |
+| `budgetAgents` | number | 本次编排的子智能体调用预算（含重试/评审/合成）：**`Math.max(0, Math.min(128, Number()\|\|0))`，0 = 不限**。超限抛 `orch.errBudget` 并中止（预算错误经 `isolate=false` 穿透任务级隔离）。 |
 
 > `reviewRounds` 的钳制是执行期的局部钳制（非配置项），因此单独列出取值范围
 > **1..3**（默认 1）。它是 `orchestrate` 唯一的数参钳制上限。
 
 其他注意点（来自 `execute`）：
 
-- `tasks` / `agent` / `supervisorAgent` 引用了未在 `orch.agents` 中定义的名称会抛
+- `tasks` / `agent` / `supervisorAgent` / `reviewers` 引用了未在 `orch.agents` 中定义的名称会抛
   `orch.errUnknownAgent`（附带可用清单）。
-- 每次调用生成 `runId`，结束（含中止/异常）后落盘一条 `RunRecord`；设置页「诊断」卡片与
+- 每次调用生成 `runId`（结果值含 `runId`），结束（含中止/异常）后落盘一条 `RunRecord`；设置页「诊断」卡片与
   `/orchestrate runs|show <runId>|presets`、`/ha` 命令可观测。
 - `globalConcurrency > 0` 时执行前要先获取共享并发配额。
 
