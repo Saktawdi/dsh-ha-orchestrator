@@ -208,12 +208,12 @@ ha-orchestrator/
   - `pipeline` 单阶段失败策略已补齐：`orch.stageRetry`（0–5，默认 0）重试预算 + 单阶段降级（失败标记 error、中止后续阶段、调用不整体失败、汇总含失败说明）（v0.5.0）。
 - [x] **并发与预算**：
   - 全局并发/单 run 并发分开：`orch.globalConcurrency`（0–64，默认 0=不限）跨 run 共享信号量，多个编排并发时排队（v0.6.0）；
-  - token 预算硬限制与“预算用尽后暂停，人工确认继续”待补（结合 dsh token-meter 服务，低优先级）。
+  - 子智能体调用预算：`budgetAgents`（0–128）硬限制，超限即中止并留痕（v0.9.0）；token 级预算待子代理 token 上报能力（低优先级）。
 - [x] **模式增强**：
   - `fanout` 支持可选合并提示词（`mergeInstructions` 触发合成任务）（v0.5.0）；
   - `map-reduce` / `router` 作为可选 pattern 已落地（v0.6.0）；
-  - `supervisor` 支持评审轮次 `reviewRounds`（1–3，每轮以上一轮输出为上下文）（v0.6.0）；多评审者（不同 agent 并行评审）待补；
-  - `pipeline` “结构化中间产物”待补（当前为 `appendPipelineCarry` 纯文本 carry；已在 resume 场景中按阶段合并输出）。
+  - `supervisor` 支持评审轮次 `reviewRounds`（1–3）与**多评审者** `reviewers` 数组（并行评审 + 综合）（v0.6.0 / v0.9.0）；
+  - `pipeline` 结构化中间产物（轻量）：carry 带 `--- 阶段 N: <任务> ---` 标记（`pipelineStageBlock`）（v0.9.0）。
 - [x] **复用**：
   - 配方/预设已落地：RPC `orchSavePreset` / `orchListPresets` / `orchDeletePreset` + 工具参数 `preset` 按名执行（调用参数可覆盖）+ `/orchestrate presets`（v0.6.0）。
 - [x] **取消与恢复**：
@@ -221,7 +221,6 @@ ha-orchestrator/
   - 中断后按 runId 恢复未完成子任务已落地（`resume <runId>`：fanout/supervisor 跳过已完成、pipeline 从失败阶段续跑并继承 carry，结果按原任务顺序合并，记录带 `resumedFrom`；旧记录缺 prompt 时明确报错）（v0.6.0）。
 
 ### Phase 3：UI / 产品体验（建议 2–3 周，首批 UI 项落地，进行中）
-
 目标：从“能配置”变成“好用、好看、可信”。
 
 - [ ] **迁移客户端到官方基建**：
@@ -237,7 +236,7 @@ ha-orchestrator/
 - [ ] **可访问性与响应式**：键盘可操作、`prefers-reduced-motion`、窄屏可用（当前 CSS 变量 + 弹性布局已基本响应式；可访问性细化待排期）。
 - [x] **错误体验**：
   - 安装后无 backups 时，UI 给清晰引导（HA 卡片空状态文案 + 「推荐备份」按钮）（v0.7.0）；
-  - 插件加载失败时的可操作诊断待补（缺服务/缺 provider/peer 冲突提示）。
+  - 插件加载失败时的可操作诊断：`/ha diag` 命令 + `diagnostics` RPC（服务可用性/持久化/加载状态/语言回滚/注入状态）（v0.9.0）。
 
 ### Phase 4：发布与生态（建议 2–3 周，文档体系与社区基建已完成，发布动作待环境就绪）
 

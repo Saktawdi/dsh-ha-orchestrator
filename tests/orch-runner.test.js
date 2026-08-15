@@ -16,6 +16,7 @@ import {
   summarizeRuns,
   renderRunOutput,
   appendPipelineCarry,
+  pipelineStageBlock,
   buildSupervisorPrompt,
 } from '../lib/orch-runner.js'
 
@@ -339,4 +340,39 @@ test('appendPipelineCarry: 三种情况', () => {
 // ---------------------------------------------------------------------------
 test('buildSupervisorPrompt: 精确拼接', () => {
   assert.equal(buildSupervisorPrompt('INSTR', 'MERGED', 'SEP'), 'INSTR\n\nSEP\n\nMERGED')
+})
+
+test('poolRun: isolate=false 的错误直接抛出，不隔离', async () => {
+  const items = [{ id: 'a' }, { id: 'b' }]
+  const err = new Error('hard stop') 
+  err.isolate = false
+  await assert.rejects(
+    poolRun(items, 2, async (item) => {
+      if (item.id === 'b') throw err
+      return { id: item.id }
+    }),
+    /hard stop/,
+  )
+})
+
+// ---------------------------------------------------------------------------
+// pipelineStageBlock（结构化中间产物轻量版）
+// ---------------------------------------------------------------------------
+test('pipelineStageBlock: 阶段序号 + 任务标识 + 输出', () => {
+  assert.equal(pipelineStageBlock(0, 's1', 'out'), '--- 阶段 1: s1 ---\nout')
+  assert.equal(pipelineStageBlock(2, 's3', ''), '--- 阶段 3: s3 ---\n')
+  assert.equal(pipelineStageBlock(1, '', 'o'), '--- 阶段 2: task ---\no')
+})
+
+// ---------------------------------------------------------------------------
+// findUnknownAgents：reviewers 校验
+// ---------------------------------------------------------------------------
+test('findUnknownAgents: reviewers 数组未知名也报出', () => {
+  const agents = [{ name: 'reviewer' }]
+  const r1 = findUnknownAgents({ reviewers: ['reviewer'] }, null, agents)
+  assert.deepEqual(r1.unknown, [])
+
+  const r2 = findUnknownAgents({ reviewers: ['ghost1', 'reviewer', 'ghost2'] }, null, agents)
+  assert.deepEqual(r2.unknown, ['ghost1', 'ghost2'])
+  assert.deepEqual(r2.availableNames, ['reviewer'])
 })

@@ -1071,3 +1071,90 @@ test('Phase3 stateExport/stateImport：配置导出与整体导入', async () =>
   // 非法 JSON 报错
   await assert.rejects(rpc.stateImport({ json: 'not-json{' }), /无效|Invalid|invalid/)
 })
+
+// ===================== Phase 2 第三轮：预算/多评审者/阶段标记/诊断 =====================
+
+test('Phase2 budgetAgents：调用预算耗尽即中止', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  // 3 个任务但预算只有 2
+  await assert.rejects(
+    toolExec(ctx, 'orchestrate', { mode: 'fanout', budgetAgents: 2, tasks: [{ id: 'b1', prompt: 'a' }, { id: 'b2', prompt: 'b' }, { id: 'b3', prompt: 'c' }] }, { id: 'a1' }),
+    /预算|budget/i,
+  )
+  assert.equal(ctx.subagentCalls.length, 2, '预算内最多 2 次调用')
+
+  // 失败留痕
+  const { runs } = await rpc.orchRuns()
+  assert.ok(runs[0].summary.indexOf('预算') >= 0 || runs[0].summary.indexOf('budget') >= 0, '失败原因记录在 summary')
+
+  // 预算充足时不拦截
+  const ok = await toolExec(ctx, 'orchestrate', { mode: 'fanout', budgetAgents: 5, tasks: [{ id: 'b4', prompt: 'd' }] }, { id: 'a1' })
+  assert.equal(ok.runs.length, 1)
+})
+
+test('Phase2 supervisor 多评审者：reviewers 并行评审 + 综合', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'supervisor',
+    mergeInstructions: '请评审',
+    reviewers: ['reviewer'], // 内置 reviewer 子智能体
+    tasks: [{ id: 'm1', prompt: 'x' }],
+  }, { id: 'a1' })
+
+  // 1 任务 + 1 评审者 + 1 综合 = 3 runs
+  assert.equal(res.runs.length, 3)
+  const ids = res.runs.map((r) => r.id)
+  assert.deepEqual(ids, ['m1', 'reviewer-1', 'supervisor'])
+  assert.equal(res.runs[1].agent, 'reviewer', '评审者使用指定 agent')
+
+  // 评审者 prompt 含合并摘要；综合 prompt 含评审输出
+  const reviewerPrompt = ctx.subagentCalls[1].request.prompt[0].text
+  assert.ok(reviewerPrompt.indexOf('请评审') >= 0)
+  assert.ok(reviewerPrompt.indexOf('OUT:m1') >= 0, '评审上下文含任务输出摘要')
+  const supPrompt = ctx.subagentCalls[2].request.prompt[0].text
+  assert.ok(supPrompt.indexOf('OUT:reviewer') >= 0, '综合上下文含评审输出')
+})
+
+test('Phase2 pipeline 结构化中间产物：carry 带阶段标记', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  await toolExec(ctx, 'orchestrate', {
+    mode: 'pipeline',
+    tasks: [{ id: 'c1', prompt: 'first' }, { id: 'c2', prompt: 'second' }],
+  }, { id: 'a1' })
+
+  const secondPrompt = ctx.subagentCalls[1].request.prompt[0].text
+  assert.ok(secondPrompt.indexOf('--- 阶段 1: c1 ---') >= 0, 'carry 含阶段标记')
+  assert.ok(secondPrompt.indexOf('OUT:c1') >= 0, 'carry 含前段输出')
+})
+
+test('Phase2 /ha diag：服务可用性与持久化诊断', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  // diagnostics RPC：结构化服务可用性
+  const diag = await rpc.diagnostics()
+  assert.equal(diag.services.subagents.present, true)
+  assert.equal(diag.services.llm.present, true)
+  assert.equal(diag.services.commands.present, true)
+  // 全新环境（无持久化文件）：configLoaded=false 是正确语义（未从磁盘恢复过）
+  assert.equal(diag.configLoaded, false)
+  assert.equal(diag.haStateLoaded, true)
+  assert.equal(diag.language.active, 'zh')
+  assert.equal(typeof diag.injection.registered, 'boolean')
+
+  // /ha diag 命令输出
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const def = ctx.commandDefs.find((d) => d.name === 'ha')
+  const res = await def.handler({ input: 'diag' })
+  assert.equal(res.kind, 'success')
+  assert.ok(res.text.indexOf('subagents') >= 0, 'diag 列出服务名')
+  assert.ok(res.text.indexOf('可用') >= 0 || res.text.indexOf('available') >= 0, 'diag 标注可用性')
+})

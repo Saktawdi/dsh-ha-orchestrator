@@ -58,6 +58,7 @@ export interface TFunc {
 export interface OrchestrateArgsLike {
   agent?: string | null
   supervisorAgent?: string | null
+  reviewers?: Array<string | null> | null
   tasks?: Array<{ agent?: string | null } | null> | null
 }
 
@@ -90,6 +91,11 @@ export function findUnknownAgents(
     }
   }
   if (args && args.supervisorAgent && !resolveAgentDef(agents, args.supervisorAgent)) unknown.push(args.supervisorAgent)
+  if (args && Array.isArray(args.reviewers)) {
+    for (const rv of args.reviewers) {
+      if (rv && !resolveAgentDef(agents, rv)) unknown.push(rv)
+    }
+  }
   return { availableNames, unknown }
 }
 
@@ -184,6 +190,8 @@ export async function poolRun<T, R>(
       try {
         results[i] = await worker(item, i)
       } catch (e) {
+        // 显式声明不隔离的错误（如预算耗尽）直接抛出，中止整个执行
+        if (e && (e as { isolate?: boolean }).isolate === false) throw e
         results[i] = {
           id: String((item as Partial<TaskLike>).id || (item as Partial<TaskLike>).label || 'task'),
           label: String((item as Partial<TaskLike>).label || ''),
@@ -228,6 +236,11 @@ export function renderRunOutput(value: { summary?: string; runs?: Array<{ id?: s
 // pipeline 模式下累计 carry：前一段输出作为下一段输入的上下文。
 export function appendPipelineCarry(carry: string | null | undefined, output: string | null | undefined): string {
   return (carry ? carry + '\n\n' : '') + (output || '')
+}
+
+// pipeline 阶段块：带阶段序号与任务标识的结构化标记（轻量“结构化中间产物”）。
+export function pipelineStageBlock(index: number, taskId: string, output: string | null | undefined): string {
+  return '--- 阶段 ' + (index + 1) + ': ' + (taskId || 'task') + ' ---\n' + (output || '')
 }
 
 // 组装 supervisor prompt：合并说明 + 分隔符 + 汇总文本。

@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.0] - 2026-08-15
+
+### Added
+- Phase 2 尾项 + Phase 3 错误体验补充：
+  - **子智能体调用预算**：`budgetAgents`（0–128，默认 0 = 不限）对单次编排的全部子智能体调用（含重试/评审/合成）做硬限制，超限即中止并留痕；`poolRun` 新增 `isolate === false` 错误穿透契约（预算类错误不参与任务级隔离）；
+  - **supervisor 多评审者**：`reviewers` 数组参数，并行评审（各自 agent、独立 run）后由 supervisor 综合，评审上下文进入最终合成；评审者名经未知名校验；
+  - **pipeline 结构化中间产物（轻量）**：carry 增加 `--- 阶段 N: <任务> ---` 标记（`pipelineStageBlock` 纯函数）；
+  - **`/ha diag` 命令 + `diagnostics` RPC**：服务可用性（tools/systemPrompt/subagents/llm/fs/timer/settings/agents/agentDefaultModel/sandboxPolicy/commands）、持久化状态、配置/HA 状态加载、语言回滚、注入状态——加载失败时可操作诊断。
+
 ## [0.8.0] - 2026-08-15
 
 ### Added

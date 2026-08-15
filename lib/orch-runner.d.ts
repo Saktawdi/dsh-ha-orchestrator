@@ -53,6 +53,7 @@ export interface TFunc {
 export interface OrchestrateArgsLike {
     agent?: string | null;
     supervisorAgent?: string | null;
+    reviewers?: Array<string | null> | null;
     tasks?: Array<{
         agent?: string | null;
     } | null> | null;
@@ -93,4 +94,5 @@ export declare function renderRunOutput(value: {
     totalLimit?: number;
 }): TextBlock[];
 export declare function appendPipelineCarry(carry: string | null | undefined, output: string | null | undefined): string;
+export declare function pipelineStageBlock(index: number, taskId: string, output: string | null | undefined): string;
 export declare function buildSupervisorPrompt(instruction: string, merged: string, outputSeparator: string): string;

@@ -49,6 +49,7 @@ import {
   buildSubagentRequest,
   buildSupervisorPrompt,
   appendPipelineCarry,
+  pipelineStageBlock,
   findUnknownAgents,
   normalizeFinalRuns,
   normalizeRunResult,
@@ -1116,6 +1117,8 @@ async function apply(ctx: Context): Promise<void> {
         preset: { type: 'string', description: '已保存的配方名称（可选；提供后从配方加载 mode/tasks/agent，调用参数可覆盖）' },
         resume: { type: 'string', description: '上次中断的 runId（可选；恢复未完成的子任务，已完成任务复用其结果）' },
         reviewRounds: { type: 'number', description: 'supervisor 模式评审轮次（可选，默认 1，上限 3）' },
+        reviewers: { type: 'array', description: 'supervisor 模式并行评审的自定义子智能体名称数组（可选；评审后由 supervisor 综合）' },
+        budgetAgents: { type: 'number', description: '本次编排的子智能体调用预算（可选，0 = 不限；含重试/评审/合成等全部调用）' },
         tasks: {
           type: 'array',
           items: {
@@ -1198,13 +1201,27 @@ async function apply(ctx: Context): Promise<void> {
           const signal = exec.signal
           const defaultDef = resolveAgentDef(args.agent) || resolveAgentDef(presetAgent)
           const mergeInstructions = String(args.mergeInstructions !== undefined && args.mergeInstructions !== null ? args.mergeInstructions : (presetMergeInstructions !== undefined ? presetMergeInstructions : ''))
-          const { availableNames, unknown } = findUnknownAgents({ agent: args.agent || presetAgent, supervisorAgent: args.supervisorAgent || presetSupervisorAgent, tasks }, tasks, state.config.orch.agents || [])
+          const { availableNames, unknown } = findUnknownAgents({ agent: args.agent || presetAgent, supervisorAgent: args.supervisorAgent || presetSupervisorAgent, reviewers: args.reviewers as Array<string | null> | null | undefined, tasks }, tasks, state.config.orch.agents || [])
           if (unknown.length > 0) throw new Error(t('orch.errUnknownAgent', {
             names: unknown.map((n) => '"' + n + '"').join(', '),
             available: availableNames.join(', ') || t('common.none'),
           }))
           const defFor = (tk: { agent?: string }): AgentDefLike | null => resolveAgentDef(tk && tk.agent) || defaultDef
-          const worker = (task: TaskLike, i: number): Promise<RunResultLike> => runOne(subagents, provider, task, '', parent, signal, defFor(task), runId)
+          // ---- 子智能体调用预算（budgetAgents）：防失控硬限制 ----
+          // 每次 runOne 调用（含重试/评审/合成）计 1；预算耗尽立即抛错中止整个编排。
+          const budgetAgents = Math.max(0, Math.min(128, Number(args.budgetAgents) || 0))
+          let budgetUsed = 0
+          const runWithBudget = <T>(fn: () => Promise<T>): Promise<T> => {
+            if (budgetAgents > 0 && budgetUsed >= budgetAgents) {
+              const err = new Error(t('orch.errBudget', { n: budgetAgents })) as Error & { isolate?: boolean }
+              // 预算错误不参与任务级隔离：直接中止整个编排
+              err.isolate = false
+              throw err
+            }
+            budgetUsed += 1
+            return fn()
+          }
+          const worker = (task: TaskLike, i: number): Promise<RunResultLike> => runWithBudget(() => runOne(subagents, provider, task, '', parent, signal, defFor(task), runId))
           // ---- resume 恢复：复用已完成子任务，只跑未完成部分 ----
           let resumedFrom = ''
           let resumePrevRec: RunRecord | null = null
@@ -1249,9 +1266,11 @@ async function apply(ctx: Context): Promise<void> {
               let attempt = 0
               while (true) {
                 try {
-                  r = await runOne(subagents, provider, runTasks[i], carry, parent, signal, defFor(runTasks[i]), runId)
+                  r = await runWithBudget(() => runOne(subagents, provider, runTasks[i], carry, parent, signal, defFor(runTasks[i]), runId))
                   break
                 } catch (e) {
+                  // 预算等不隔离错误直接中止（不进入阶段重试）
+                  if (e && (e as { isolate?: boolean }).isolate === false) throw e
                   attempt += 1
                   if (attempt > stageRetry) {
                     stageFailed = String((e && (e as Error).message) || e)
@@ -1271,7 +1290,8 @@ async function apply(ctx: Context): Promise<void> {
               const rFinal = r as RunResultLike
               runs.push(rFinal)
               if (rFinal.status === 'error') break
-              carry = appendPipelineCarry(carry, rFinal.output || '')
+              // 结构化中间产物（轻量）：阶段标记 + 任务标识 + 输出
+              carry = appendPipelineCarry(carry, pipelineStageBlock(i, rFinal.id, rFinal.output))
             }
             summary = stageFailed
               ? t('orch.sumPipelineFailed', { out: carry || t('orch.sumNoOutput'), reason: stageFailed })
@@ -1281,16 +1301,30 @@ async function apply(ctx: Context): Promise<void> {
             const merged = summarize(runs.concat(resumeCompleted))
             const instruction = String(mergeInstructions || t('orch.mergeDefault'))
             const supDef = resolveAgentDef(args.supervisorAgent) || resolveAgentDef(presetSupervisorAgent) || defaultDef
+            const reviewers = Array.isArray(args.reviewers) ? args.reviewers.filter((n) => !!n).map((n) => String(n)) : []
+            // 多评审者：并行评审（各自独立 agent），输出并入综合上下文
+            let reviewContext = merged
+            if (reviewers.length > 0) {
+              const reviewTasks: TaskLike[] = reviewers.map((name, idx) => ({
+                id: 'reviewer-' + (idx + 1),
+                label: name,
+                agent: name,
+                prompt: buildSupervisorPrompt(instruction, merged, t('orch.outputSeparator')),
+              }))
+              const reviewerRuns = await poolRun(reviewTasks, Math.max(1, reviewers.length), (tk, i) => runWithBudget(() => runOne(subagents, provider, tk, '', parent, signal, defFor(tk), runId)))
+              runs = runs.concat(reviewerRuns)
+              reviewContext = appendPipelineCarry(merged, reviewerRuns.map((r) => pipelineStageBlock(0, r.label, r.output)).join('\n\n'))
+            }
             // 评审轮次：每轮以上一轮输出为上下文重新评审（reviewRounds 1..3）
             const reviewRounds = Math.max(1, Math.min(3, Number(args.reviewRounds) || 1))
             let prevOut = ''
             for (let round = 1; round <= reviewRounds; round += 1) {
               const roundPrompt = buildSupervisorPrompt(
                 instruction,
-                round === 1 ? merged : appendPipelineCarry(prevOut, merged),
+                round === 1 ? reviewContext : appendPipelineCarry(prevOut, reviewContext),
                 t('orch.outputSeparator'),
               )
-              const sup = await runOne(subagents, provider, { id: 'supervisor', label: 'supervisor' + (reviewRounds > 1 ? '#' + round : ''), prompt: roundPrompt }, '', parent, signal, supDef, runId)
+              const sup = await runWithBudget(() => runOne(subagents, provider, { id: 'supervisor', label: 'supervisor' + (reviewRounds > 1 ? '#' + round : ''), prompt: roundPrompt }, '', parent, signal, supDef, runId))
               runs = runs.concat([sup])
               prevOut = sup.output || ''
             }
@@ -1301,14 +1335,14 @@ async function apply(ctx: Context): Promise<void> {
             const merged = summarize(runs.concat(resumeCompleted))
             const instruction = String(mergeInstructions || t('orch.mergeDefault'))
             const reducePrompt = buildSupervisorPrompt(instruction, merged, t('orch.outputSeparator'))
-            const rr = await runOne(subagents, provider, { id: 'reduce', label: 'reduce', prompt: reducePrompt }, '', parent, signal, defaultDef, runId)
+            const rr = await runWithBudget(() => runOne(subagents, provider, { id: 'reduce', label: 'reduce', prompt: reducePrompt }, '', parent, signal, defaultDef, runId))
             runs = runs.concat([rr])
             summary = t('orch.sumMerged', { out: rr.output || t('orch.sumNoOutput') })
           } else if (mode === 'router') {
             // router：从候选任务中路由选择最合适的一项执行（单次调用）
             const instruction = String(mergeInstructions || t('orch.routerDefault'))
             const list = runTasks.map((tk, i) => (i + 1) + '. [' + (tk.label || tk.id || 'task') + '] ' + tk.prompt).join('\n')
-            const rt = await runOne(subagents, provider, { id: 'router', label: 'router', prompt: instruction + '\n\n' + list }, '', parent, signal, defaultDef, runId)
+            const rt = await runWithBudget(() => runOne(subagents, provider, { id: 'router', label: 'router', prompt: instruction + '\n\n' + list }, '', parent, signal, defaultDef, runId))
             runs = [rt]
             summary = t('orch.sumRouter', { out: rt.output || t('orch.sumNoOutput') })
           } else {
@@ -1318,7 +1352,7 @@ async function apply(ctx: Context): Promise<void> {
               const merged = summarize(runs.concat(resumeCompleted))
               const instruction = String(mergeInstructions)
               const mergePrompt = buildSupervisorPrompt(instruction, merged, t('orch.outputSeparator'))
-              const mr = await runOne(subagents, provider, { id: 'merge', label: 'merge', prompt: mergePrompt }, '', parent, signal, defaultDef, runId)
+              const mr = await runWithBudget(() => runOne(subagents, provider, { id: 'merge', label: 'merge', prompt: mergePrompt }, '', parent, signal, defaultDef, runId))
               runs = runs.concat([mr])
               summary = t('orch.sumMerged', { out: mr.output || t('orch.sumNoOutput') })
             } else {
@@ -1582,7 +1616,7 @@ async function apply(ctx: Context): Promise<void> {
       haCommandDispose = commands.register({
         name: 'ha',
         description: t('ha.cmdDesc'),
-        input: { hint: '[status|reset|probe <provider> <model>]' },
+        input: { hint: '[status|diag|reset|probe <provider> <model>]' },
         handler: (invocation: CommandInvocationLike) => handleHaCommand(invocation),
       })
       haCommandRetries = 0
@@ -1634,6 +1668,24 @@ async function apply(ctx: Context): Promise<void> {
     }
     return lines.join('\n')
   }
+  async function haDiagText(): Promise<string> {
+    const lines: string[] = [t('diag.title')]
+    // 服务可用性
+    const svc = (name: string, present: boolean): string => {
+      const v = getService<unknown>(ctx, name)
+      return '  - ' + name + ': ' + (v != null ? t('diag.available') : t('diag.missing'))
+    }
+    for (const name of ['tools', 'systemPrompt', 'subagents', 'llm', 'fs', 'timer', 'settings', 'agents', 'agentDefaultModel', 'sandboxPolicy', 'commands']) {
+      lines.push(svc(name, true))
+    }
+    // 配置与持久化
+    lines.push(t('diag.persist') + ': ' + (persistState.ok ? persistState.path : t('diag.persistFail') + (persistState.error ? ' (' + persistState.error + ')' : '')))
+    lines.push(t('diag.configLoaded') + ': ' + (configLoaded ? t('diag.yes') : t('diag.no')))
+    lines.push(t('diag.haState') + ': ' + (haStateLoaded ? t('diag.yes') : t('diag.no')))
+    lines.push(t('diag.lang') + ': ' + langState.active + (langState.rollback ? ' (' + t('sys.rollbackEvent', { reason: langState.rollbackReason }) + ')' : ''))
+    lines.push(t('diag.injection') + ': ' + (injectionStatus.registered ? t('diag.yes') : t('diag.no') + (injectionStatus.reason ? ' (' + injectionStatus.reason + ')' : '')))
+    return lines.join('\n')
+  }
   async function handleHaCommand(invocation: CommandInvocationLike): Promise<{ kind: 'success' | 'error'; text: string }> {
     try {
       const rest = String((invocation && invocation.input) || '').trim()
@@ -1660,6 +1712,9 @@ async function apply(ctx: Context): Promise<void> {
             ? t('ha.probeOk', { provider, model })
             : t('ha.probeFail', { provider, model, reason: res.reason || '' }),
         }
+      }
+      if (verb === 'diag') {
+        return { kind: 'success', text: await haDiagText() }
       }
       return { kind: 'success', text: haStatusText() }
     } catch (e) {
@@ -2045,8 +2100,7 @@ async function apply(ctx: Context): Promise<void> {
       return out
     }
     // 手动触发探测：隔离中的键 -> 成功后解除隔离；未隔离的键 -> 仅探测不改状态
-    async haProbeNow(args: { provider?: string; model?: string }): Promise<{ ok: boolean; reason?: string; key: string }> {
-      const provider = args && args.provider ? String(args.provider) : ''
+    async haProbeNow(args: { provider?: string; model?: string }): Promise<{ ok: boolean; reason?: string; key: string }> {      const provider = args && args.provider ? String(args.provider) : ''
       const model = args && args.model ? String(args.model) : ''
       if (!provider || !model) throw new Error('haProbeNow: provider/model required')
       // force=true：手动探测无视冷却剩余时间，立即验证
@@ -2078,6 +2132,24 @@ async function apply(ctx: Context): Promise<void> {
     // 最近 run 列表（内存，供 UI Run 面板轮询）
     orchRuns(): { runs: RunRecord[] } {
       return { runs: state.runs.slice(0, RUN_MEM_CAP) }
+    }
+    // 加载/运行诊断：服务可用性、持久化、语言、注入状态（排障用）
+    diagnostics(): Record<string, unknown> {
+      const names = ['tools', 'systemPrompt', 'subagents', 'llm', 'fs', 'timer', 'settings', 'agents', 'agentDefaultModel', 'sandboxPolicy', 'commands']
+      const services: Record<string, { present: boolean }> = {}
+      for (const n of names) {
+        const v = getService<unknown>(ctx, n)
+        services[n] = { present: v != null }
+      }
+      return {
+        services,
+        persist: persistState,
+        configLoaded,
+        haStateLoaded,
+        language: { active: langState.active, rollback: langState.rollback, reason: langState.rollbackReason },
+        injection: injectionStatusSnapshot(),
+        probeEnabled: state.config.ha.probeEnabled,
+      }
     }
     // ---- 配方（预设）管理 ----
     orchListPresets() {
@@ -2130,6 +2202,7 @@ async function apply(ctx: Context): Promise<void> {
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haProbeNow', 'haProbeNow', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haSuggestBackups', 'haSuggestBackups', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'orchRuns', 'orchRuns', remoteInitializers)
+  decorateRemoteMethod(Remote, HaOrchestratorRpc, 'diagnostics', 'diagnostics', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'orchListPresets', 'orchListPresets', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'orchSavePreset', 'orchSavePreset', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'orchDeletePreset', 'orchDeletePreset', remoteInitializers)
