@@ -16,9 +16,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Syntax check
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build (src -> lib)
+        run: npm run build
+      - name: Syntax check (client bundle)
         run: npm run check
-      - name: Unit tests
+      - name: Unit + integration tests
         run: npm test
       - name: Offline verify
         run: npm run verify

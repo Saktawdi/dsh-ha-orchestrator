@@ -1,6 +1,6 @@
 {
   "name": "ha-orchestrator",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Model high-availability failover + subagent orchestration (fanout/pipeline/supervisor) for DeepSeek Harness",
   "keywords": [
     "dsh",
@@ -14,6 +14,7 @@
   ],
   "files": [
     "lib",
+    "src",
     "cordis.patch.yml",
     ".language",
     "README.md",
@@ -23,10 +24,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test \"tests/*.test.js\"",
-    "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/language.js && node --check lib/config.js && node --check lib/ha-core.js && node --check lib/orch-runner.js && node --check lib/remote.js",
+    "test": "node --test \"tests/*.test.js\" \"tests/integration/*.test.js\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "check": "node --check lib/client.js",
     "verify": "node scripts/verify.mjs",
-    "prepublishOnly": "npm run check && npm test && npm run verify"
+    "prepublishOnly": "npm run typecheck && npm run build && npm run check && npm test && npm run verify"
   },
   "repository": {
     "type": "git",
@@ -34,8 +38,10 @@
   },
   "type": "module",
   "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./client": {
@@ -43,6 +49,12 @@
     },
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dsh": {
     "client": {
@@ -62,7 +74,15 @@
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6"
   },
   "license": "MIT"
 }

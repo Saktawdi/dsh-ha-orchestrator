@@ -1,6 +1,6 @@
 import assert from 'node:assert'
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -13,15 +13,22 @@ const pkg = JSON.parse(read('package.json'))
 await check('package.json fields', () => {
   assert(pkg.name === 'ha-orchestrator', 'package name')
   assert(pkg.main === 'lib/index.js', 'main')
+  assert(pkg.types === 'lib/index.d.ts', 'types')
   assert(Array.isArray(pkg.files) && pkg.files.includes('lib'), 'files.lib')
+  assert(pkg.files.includes('src'), 'files.src')
   assert(pkg.files.includes('.language'), 'files.language')
   assert(pkg.files.includes('cordis.patch.yml'), 'files.cordis.patch.yml')
   assert(pkg.files.includes('docs'), 'files.docs')
   assert(pkg.dsh && pkg.dsh.bundle && pkg.dsh.bundle.patch === './cordis.patch.yml', 'dsh.bundle.patch')
   assert(pkg.exports && pkg.exports['./cordis.patch.yml'] === './cordis.patch.yml', 'exports.cordis.patch.yml')
+  assert(pkg.engines && pkg.engines.node, 'engines.node')
+  assert(pkg.publishConfig && pkg.publishConfig.access === 'public', 'publishConfig.access')
   assert(pkg.scripts && typeof pkg.scripts.test === 'string', 'scripts.test')
+  assert(pkg.scripts && typeof pkg.scripts.typecheck === 'string', 'scripts.typecheck')
+  assert(pkg.scripts && typeof pkg.scripts.build === 'string', 'scripts.build')
   assert(pkg.scripts && typeof pkg.scripts.check === 'string', 'scripts.check')
   assert(pkg.scripts && typeof pkg.scripts.verify === 'string', 'scripts.verify')
+  assert(pkg.devDependencies && pkg.devDependencies.typescript, 'devDependencies.typescript')
 })
 
 await check('cordis.patch.yml minimal parse', () => {
@@ -51,6 +58,21 @@ await check('language packs', () => {
     for (const [k, v] of Object.entries(dict)) assert(typeof v === 'string', `${file}.${k} not string`)
   }
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort(), 'key parity')
+})
+
+await check('TypeScript 构建产物齐全', () => {
+  // lib/ 必须为 src/ 的 tsc 构建产物（含类型声明），且保留手写 client bundle
+  for (const f of ['lib/config.d.ts', 'lib/ha-core.d.ts', 'lib/orch-runner.d.ts', 'lib/language.d.ts', 'lib/remote.d.ts', 'lib/types.d.ts', 'lib/index.d.ts', 'lib/client.js']) {
+    assert(existsSync(join(root, f)), 'missing build artifact: ' + f)
+  }
+  // src 与 lib 模块一一对应
+  for (const f of ['config', 'ha-core', 'orch-runner', 'language', 'remote', 'types', 'index']) {
+    assert(existsSync(join(root, 'src', f + '.ts')), 'missing source: src/' + f + '.ts')
+    assert(existsSync(join(root, 'lib', f + '.js')), 'missing build: lib/' + f + '.js')
+  }
+  // 构建产物未被源文件覆盖（src 内不应存在 .js）
+  const srcJs = readdirSync(join(root, 'src')).filter((f) => f.endsWith('.js'))
+  assert.equal(srcJs.length, 0, 'src/ should contain no .js files')
 })
 
 await check('pure module smoke', async () => {
@@ -103,7 +125,7 @@ await check('npm pack dry-run', () => {
   const stdout = execFileSync(npmBin, ['pack', '--dry-run', '--json'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], shell: true })
   const info = JSON.parse(stdout)
   const files = (info[0] && info[0].files || []).map((f) => f.path)
-  for (const required of ['cordis.patch.yml', '.language/zh.json', '.language/en.json', 'lib/index.js', 'lib/client.js', 'lib/config.js', 'lib/ha-core.js', 'lib/orch-runner.js', 'lib/remote.js', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md']) {
+  for (const required of ['cordis.patch.yml', '.language/zh.json', '.language/en.json', 'lib/index.js', 'lib/client.js', 'lib/config.js', 'lib/ha-core.js', 'lib/orch-runner.js', 'lib/remote.js', 'lib/index.d.ts', 'src/index.ts', 'src/config.ts', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md']) {
     assert(files.includes(required), `missing packed file: ${required}`)
   }
 })

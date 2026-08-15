@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0] - 2026-08-15
+
+### Added
+- TypeScript 工程化（路线图 Phase 0 完成）：
+  - 源码迁移至 `src/`（`index.ts` + 5 个纯逻辑模块 + `types.ts` 服务契约），`lib/` 为 tsc 构建产物（含 `.d.ts` 类型声明）；
+  - `tsconfig.json`（strict / NodeNext / declaration），`npm run typecheck` / `npm run build` 入门禁；
+  - `package.json` 产品化字段：`engines.node`（>=20.19）、`publishConfig.access: public`、`types` 入口、peerDependencies 校准（补 `dsh-agent` / `dsh-llm` rc.6 类型线）；
+- 集成测试（`tests/integration/host.test.js`，15 例）：以最小假 ctx 驱动真实插件，覆盖装配、上下文注入求值、HA 事件流（直通/隔离/切换/预算耗尽/停止兜底）、orchestrate 三种模式 execute、配置持久化与重启恢复、agentsGenerate、语言跟随、haReset、模型列表；
+- CI 门禁升级：`npm ci` → typecheck → build → check → test → verify（Linux + Windows）；`prepublishOnly` 同款全链路。
+
+### Fixed
+- `lib/` 由构建产物与手写 `client.js` 并存，`src/` 不再包含 `.js`（verify 有产物完整性检查）。
+
 ## [0.2.2] - 2026-08-15
 
 ### Fixed

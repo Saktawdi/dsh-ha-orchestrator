@@ -2,7 +2,7 @@
 
 > 版本：草案 v1.0
 > 范围：基于 2026-08 GitHub / npm 生态调研，为 ha-orchestrator 从“个人可用插件”升级为“优秀产品化 DSH 插件”给出路线图。
-> 当前基线：v0.2.2（2026-08-15）。静态 Cordis 插件，纯 JS 七模块：`lib/index.js`（装配 / HA 事件 / 编排工具 / 上下文注入 / RPC）、`lib/client.js`（设置页 UI）、`lib/config.js`、`lib/ha-core.js`、`lib/orch-runner.js`、`lib/language.js`、`lib/remote.js`（其中五个模块无 DSH 依赖）；114 个纯逻辑单测 + `scripts/verify.mjs` 离线冒烟 + GitHub Actions（Linux/Windows）；`dsh plugin add "file:<repo>"` 可安装；尚未发布 npm。
+> 当前基线：v0.3.0（2026-08-15）。静态 Cordis 插件；源码 TypeScript（`src/`：index + 5 个纯逻辑模块 + types 服务契约），`lib/` 为 tsc 构建产物（含 `.d.ts`）；114 个纯逻辑单测 + 15 个集成测试（假 ctx 驱动真实插件）+ `scripts/verify.mjs` 离线冒烟（6 组）+ GitHub Actions（Linux/Windows，typecheck/build/test/verify 全链路）；`dsh plugin add "file:<repo>"` 可安装；尚未发布 npm。
 
 ---
 
@@ -58,7 +58,7 @@
 | 轻量编排 | 三种模式 + `list-subagents` + 自定义子智能体 | 三种模式 + 可持久化 run + 实时进度 |
 | 零配置开箱 | 需手动配置 backups（默认内置 reviewer 继承默认模型） | 内置向导/推荐配置 + 空状态引导 |
 | 配置体验 | 自绘五卡片 UI + 上下文注入 | 官方 Settings 体系 + 中英双语 + 可访问性 |
-| 工程可信度 | 114 单测 + verify + CI（Linux/Windows） | 全绿 + TS + e2e + 兼容矩阵 |
+| 工程可信度 | 129 测试（114 单测 + 15 集成）+ verify + CI（Linux/Windows） | 全绿 + e2e + 兼容矩阵 |
 
 ### 2.3 不做什么（边界）
 
@@ -74,9 +74,9 @@
 | 维度 | 现状（v0.2.2） | 产品化目标 | 主要差距 |
 | --- | --- | --- | --- |
 | 安装 | `dsh plugin --profile web add "file:<repo>"` 已可用（`dsh.bundle.patch` + `cordis.patch.yml`） | `dsh plugin add ha-orchestrator`（npm 包名）一键安装 | 缺 npm 发布与兼容矩阵验证记录 |
-| 技术栈 | 纯 JS 七模块（config / ha-core / orch-runner / language / remote 无 DSH 依赖），index / client 为装配胶水 | TypeScript 模块化、官方 client 基建 | index / client 仍手写，需 TS 化；服务键仍未物化 |
-| 测试 | 114 个纯逻辑单测（config 20 / ha-core 19 / orch-runner 41 / language 24 / remote 10，node:test） | 核心逻辑单测 + 离线冒烟 + e2e | DSH 事件流与真实 subagent 集成无测试，无 e2e |
-| CI | GitHub Actions：Linux + Windows（check / test / verify，Node 22） | typecheck / test / build / verify 全绿 | 无 typecheck/build（TS 未迁移）、无兼容矩阵 job |
+| 技术栈 | TypeScript 七模块（src/，strict）+ tsc 构建（lib/ + .d.ts） | TypeScript 模块化、官方 client 基建 | client 仍手写 JS，待 Phase 3 迁移官方 UI 基建；服务键已物化（ctx.haOrchestrator） |
+| 测试 | 129（114 单测 + 15 集成：假 ctx 驱动真实插件的 HA 事件流 / 编排 execute / 配置持久化恢复） | 核心逻辑单测 + 离线冒烟 + e2e | 真实 dsh 环境的 live e2e 待补（部署验证） |
+| CI | GitHub Actions：Linux + Windows（typecheck / build / check / test / verify，Node 22） | typecheck / test / build / verify 全绿 | 无兼容矩阵 job |
 | 状态持久化 | 配置 JSON（`ha-orchestrator.config.json` + `.backup.json`，多目录降级 + 重试加载）；HA 运行态内存 | HA 熔断/冷却/历史可持久化 + run 持久化 | HA/run 运行态进程重启丢失 |
 | 可观测性 | debug 日志（内存环形 500 条）+ 设置页状态卡 + 注入状态徽章 | 会话事件、`/ha` 命令、活动面板、状态快照 | 缺事件、缺命令、UI 弱 |
 | 配置 | 自有 JSON 文件 + 自绘五卡片 UI | DSH settings/storageDomain + 官方 Settings 卡片 | 存储/UI 都需迁移 |
@@ -103,7 +103,7 @@ ha-orchestrator/
 │   ├── orch-runner.js        # 编排纯逻辑：并发池/pipeline carry/supervisor prompt/汇总渲染（无 DSH 依赖）
 │   ├── language.js           # 语言包解析/回滚/插值（无 DSH 依赖）
 │   └── remote.js             # Remote decorator 官方同形装配（无 DSH 依赖）
-├── src/                      # TypeScript 迁移目标（替代 lib/*.js，见 Phase 0）
+├── src/                      # TypeScript 源码（已落地，替代 lib/*.js 为构建产物）
 │   ├── index.ts              # 插件入口、inject、生命周期
 │   ├── config.ts             # Config schema、默认值、sanitize、持久化
 │   ├── ha/                   # 高可用：熔断/冷却/轮换/探测/steer
@@ -149,14 +149,14 @@ ha-orchestrator/
 
 ## 5. 分阶段路线图
 
-### Phase 0：工程化地基（1–2 周，已完成约 80%）
+### Phase 0：工程化地基（1–2 周，已完成 100%）
 
 目标：让仓库从“能跑”变成“能维护、能发布”。
 
-- [ ] 迁移到 TypeScript + 模块化目录（保留 `lib/` 构建产物，源码放 `src/`）。
-- [ ] 引入 `tsdown` / `tsc` 构建，提交 `lib/` 或发布预构建产物。
-- [x] `package.json` 基础产品化字段已落地：`files`（含 `.language` / `cordis.patch.yml` / `docs`）、`scripts`（test / check / verify / prepublishOnly）、`repository`、`keywords`、`dsh.bundle.patch`、`dsh.client.inject`、`exports`。
-- [ ] `engines`、`publishConfig.access`，以及 peerDependencies 的校准与兼容性验证（当前已为 caret 范围）。
+- [x] 迁移到 TypeScript + 模块化目录（源码 `src/`，构建产物 `lib/`，strict / NodeNext / declaration）。
+- [x] 引入 `tsc` 构建（`npm run build`），提交 `lib/` 构建产物 + `.d.ts` 类型声明。
+- [x] `package.json` 基础产品化字段已落地：`files`（含 `.language` / `cordis.patch.yml` / `docs` / `src`）、`scripts`（test / typecheck / build / check / verify / prepublishOnly）、`repository`、`keywords`、`dsh.bundle.patch`、`dsh.client.inject`、`exports`（含 `types` 入口）。
+- [x] `engines.node`（>=20.19）、`publishConfig.access: public`、peerDependencies 校准（rc.6 版本线 + 补 `dsh-agent` / `dsh-llm` 类型线）。
 - [x] `cordis.patch.yml` 已落地，`dsh plugin add "file:<repo>"` 会自动加入 profile bundles（已与官方 dsh CLI 源码核对 reconcile 行为）。
 - [x] 核心逻辑单测已落地（`node:test`，共 114 例）：
   - config：默认值/sanitize 钳制与规整（`tests/config.test.js`，20 例）；
@@ -164,17 +164,11 @@ ha-orchestrator/
   - 编排纯逻辑：并发池保序/异常隔离、pipeline carry、supervisor prompt、maxAgents 截断、并发解析、请求构造与汇总渲染（`tests/orch-runner.test.js`，41 例）；
   - i18n：语言解析、回滚、占位符（`tests/language.test.js`，24 例）；
   - Remote decorator 运行时：标准 context/initializer/元数据语义（`tests/remote.test.js`，10 例）。
-- [ ] HA 持久化恢复与事件流集成测试仍待补（真实 DSH 事件与磁盘恢复）。
-- [ ] 真实 subagent 的 execute 集成与 e2e 仍待补。
-- [x] `scripts/verify.mjs` 离线冒烟（6 组检查）+ GitHub Actions（Linux/Windows，Node 22）已落地，门禁为 `npm run check && npm test && npm run verify`（`prepublishOnly` 同款）。
-- [ ] `pnpm typecheck` / `pnpm build` 待 TypeScript 迁移后补入同一门禁。
-- 已知问题修复（v0.2.1 / v0.2.2 已全部落地）：
-  - [x] `stateSet` 清空隔离/失败计数：改为仅在 backups 列表真正变化时清空（v0.2.x 修复）；
-  - [x] README 中配置保存位置与代码实际不一致（已修复）；
-  - [x] `remoteDecorate` hack 已替换为官方 dsh-goal 编译产物同形的 `__esDecorate`/initializer 装配（lib/remote.js）；
-  - [x] 默认配置不再硬编码不存在的 provider/model：backups 默认空、内置 reviewer 继承 DSH 默认模型（v0.2.2）；
-  - [x] 语言包改严格 JSON（`.language/*.json` + `JSON.parse`），移除 `new Function` 执行面（v0.2.2）；
-  - [x] 配置持久化不再静默丢失：启动重试（30 次/2s）+ 多目录降级 + `stateGet` 懒加载兜底（v0.2.2）。
+- [x] HA 持久化恢复与事件流集成测试：`tests/integration/host.test.js`（15 例）——最小假 ctx（cordis waterfall/emit/reflect 语义）驱动真实插件构建产物，覆盖装配、上下文注入求值、HA 事件流（直通/隔离/切换/预算耗尽/停止兜底 steer）、orchestrate 三种模式 execute（含 pipeline carry、supervisor 合成）、配置写盘与「重启恢复」（共享内存 fs 模拟磁盘）、agentsGenerate、语言跟随、haReset、模型列表。
+- [x] 真实 subagent 的 execute 集成：以契约级假提供方（list/start/result/dispose + 真实 AbortSignal 校验）覆盖 runOne 全链路；真实 dsh 环境的 e2e 留待部署验证（执行 `dsh plugin add "file:<repo>"` 后工具/事件/注入可用即视为通过，本机已热重载验证）。
+- [x] `scripts/verify.mjs` 离线冒烟（6 组：包字段 / patch / 语言包 / TS 构建产物完整性 / 纯模块冒烟 / npm pack dry-run）+ GitHub Actions（Linux/Windows，Node 22，`npm ci → typecheck → build → check → test → verify`），`prepublishOnly` 同款门禁。
+- [x] `pnpm typecheck` / `pnpm build`（npm 脚本等价物）已补入同一门禁。
+- 已知问题修复（v0.2.1 / v0.2.2 已全部落地，见 CHANGELOG）。
 
 ### Phase 1：HA 能力补强（建议 2–3 周）
 
@@ -275,12 +269,12 @@ ha-orchestrator/
 
 ## 6. 产品化成功指标（建议）
 
-| 指标 | 当前（v0.2.2） | 6 个月目标 |
+| 指标 | 当前（v0.3.0） | 6 个月目标 |
 | --- | --- | --- |
 | 安装方式 | `dsh plugin add "file:<repo>"` 可用 | `dsh plugin add ha-orchestrator` 一键安装 |
 | npm 下载 / GitHub stars | 未发布 npm，stars 低 | 持续增长，有外部用户 issue/PR |
-| 测试数 | 114 个核心逻辑断言 + 离线冒烟 | ≥ 80 个核心逻辑断言 + 集成/e2e |
-| CI | Linux + Windows 全绿（check/test/verify） | 加 typecheck / build 全绿 |
+| 测试数 | 129 断言（114 单测 + 15 集成）+ 离线冒烟 | ≥ 80 个核心逻辑断言 + 集成/e2e |
+| CI | Linux + Windows 全绿（typecheck/build/check/test/verify） | 加兼容矩阵 job |
 | 崩溃/阻塞类 issue | 未知 | 有兼容矩阵与回归测试兜底 |
 | 用户可观测性 | debug 日志 + 设置页状态卡 | `/ha status`、会话事件、Run 面板 |
 | 文档 | README + docs 3 篇 | 5+ 篇结构化文档 |
