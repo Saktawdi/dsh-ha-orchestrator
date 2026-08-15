@@ -219,25 +219,24 @@ ha-orchestrator/
   - 取消语义已基本闭环：`runOne` 强制要求真实 `AbortSignal`（缺失直接拒绝）、`poolRun` 透传、`pipeline` 循环检查 `signal.aborted`、`run.dispose()` 在 finally 回收；
   - 中断后按 runId 恢复未完成子任务已落地（`resume <runId>`：fanout/supervisor 跳过已完成、pipeline 从失败阶段续跑并继承 carry，结果按原任务顺序合并，记录带 `resumedFrom`；旧记录缺 prompt 时明确报错）（v0.6.0）。
 
-### Phase 3：UI / 产品体验（建议 2–3 周）
+### Phase 3：UI / 产品体验（建议 2–3 周，首批 UI 项落地，进行中）
 
 目标：从“能配置”变成“好用、好看、可信”。
 
 - [ ] **迁移客户端到官方基建**：
-  - 使用 `@deepseek-ai/dsh-client-ui-*` primitives 和 slots，替换手写 `createElement` + 内联 CSS（当前为 lazy-CJS 手写 bundle）；
+  - 使用 `@deepseek-ai/dsh-client-ui-*` primitives 和 slots，替换手写 `createElement` + 内联 CSS（当前为 lazy-CJS 手写 bundle）——最大块，单独排期；
   - 接入官方 locale，而不是自己维护 client i18n 快照（当前 client 从 `stateGet` 的 `i18n.dict` 同步字典）。
-- [ ] **设置页重构**：
-  - 卡片化但更贴近 DSH 原生设置风格（当前五卡片：HA / 编排 / 子智能体 / 调试 / 系统）；
-  - 增加“状态/诊断”页签：熔断状态、冷却倒计时、切换历史、最近 run；
-  - 增加“一键导出/导入配置”。
+- [x] **设置页重构（首批）**：
+  - 新增「诊断」折叠卡片：熔断/冷却/探测概览、隔离清单（含 level/剩余时间）、失败计数、游标、探测记录、最近 run，10s 轮询（v0.7.0）；
+  - “一键导出/导入配置”已落地：`stateExport`/`stateImport` RPC + 系统卡片导出（复制）/导入（粘贴并应用）区域（v0.7.0）；
+  - 卡片化风格与 DSH 原生对齐（CSS 变量 + 折叠）已部分完成；原生 settings 体系迁移待官方基建项。
 - [ ] **Run 面板**：
-  - 对话流中显示 `orchestrate` 调用卡片：runId、进度、各子任务状态、输出摘要；
-  - 可点击子任务打开对应子代理会话（如果 DSH 支持）。
-- [ ] **可访问性与响应式**：
-  - 键盘可操作、`prefers-reduced-motion`、窄屏可用。
-- [ ] **错误体验**：
-  - 安装后无 backups 时，在 UI 中给清晰引导；
-  - 插件加载失败时给可操作诊断（缺服务、缺 provider、peer 冲突）。
+  - 对话流中显示 `orchestrate` 调用卡片：runId、进度、各子任务状态、输出摘要（待官方 conversation view 基建）；
+  - 设置页「诊断」卡片已展示最近 run 列表（runId/mode/status）（v0.7.0）。
+- [ ] **可访问性与响应式**：键盘可操作、`prefers-reduced-motion`、窄屏可用（当前 CSS 变量 + 弹性布局已基本响应式；可访问性细化待排期）。
+- [x] **错误体验**：
+  - 安装后无 backups 时，UI 给清晰引导（HA 卡片空状态文案 + 「推荐备份」按钮）（v0.7.0）；
+  - 插件加载失败时的可操作诊断待补（缺服务/缺 provider/peer 冲突提示）。
 
 ### Phase 4：发布与生态（建议 2–3 周）
 

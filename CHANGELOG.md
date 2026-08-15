@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.7.0] - 2026-08-15
+
+### Added
+- 路线图 Phase 3（UI / 产品体验）后端支撑与首批 UI 项落地：
+  - **一键导出/导入配置**：RPC `stateExport`（完整配置 JSON）与 `stateImport`（整体替换，缺失节回退默认，落盘/工具重建语义与 stateSet 一致）；设置页「系统」卡片新增导出（含复制）/导入（粘贴并应用）区域；
+  - **诊断卡片**：设置页新增「诊断」折叠卡片——HA 熔断/冷却/探测开关概览、隔离清单（含 level 与剩余时间）、失败计数、游标、探测记录、最近运行（runId/mode/tasks/status），10s 轮询；
+  - **空状态引导**：未配置备用模型时 HA 卡片显示引导文案（提示使用「推荐备份」）；
+  - client TYPERT_REMOTE 描述符补齐（haStatus/haProbeNow/haSuggestBackups/orchRuns/orchListPresets/orchSavePreset/orchDeletePreset/stateExport/stateImport）。
+
 ## [0.6.0] - 2026-08-15
 
 ### Added

@@ -1767,6 +1767,25 @@ async function apply(ctx: Context): Promise<void> {
   })
 
   // ================= 配置页 RPC（Remote 服务，client 经 ctx.remote.haOrchestrator 调用） =================
+  // 把 sanitize 后的配置节应用到运行态（stateSet / stateImport 共用）
+  async function applyConfigNext(next: Partial<Config>): Promise<void> {
+    const agentsChanged = next.orch && next.orch.agents !== undefined
+    const langChanged = next.lang !== undefined
+    const backupsChanged =
+      next.ha
+        ? JSON.stringify(next.ha.backups) !== JSON.stringify((state.config.ha || {}).backups)
+        : false
+    for (const key of Object.keys(next)) {
+      (state.config as unknown as Record<string, unknown>)[key] = (next as unknown as Record<string, unknown>)[key]
+    }
+    if (backupsChanged) { state.quarantine.clear(); state.failures.clear(); state.perAgent.clear() }
+    providerCache = null
+    await persistConfig()
+    // 自定义子智能体清单变化 -> 重建工具（orchestrate / list-subagents 描述与查询提示随之更新）
+    if (agentsChanged) reinstallTools()
+    // 插件语言变化 -> 重新应用语言（失败自动回滚 zh），工具文案随之重建
+    if (langChanged) await applyLanguage().catch((e) => console.error('[ha] apply language failed', e))
+  }
   function buildState(extra?: Record<string, unknown>): StateSnapshot & Record<string, unknown> {
     clearExpired()
     const out: StateSnapshot & Record<string, unknown> = {
@@ -1916,22 +1935,7 @@ async function apply(ctx: Context): Promise<void> {
     async stateSet(args: { patch?: unknown }): Promise<StateSnapshot & Record<string, unknown>> {
       const patch = args && args.patch
       const next = sanitizeConfig(patch, state.config)
-      const agentsChanged = next.orch && next.orch.agents !== undefined
-      const langChanged = next.lang !== undefined
-      const backupsChanged =
-        next.ha
-          ? JSON.stringify(next.ha.backups) !== JSON.stringify((state.config.ha || {}).backups)
-          : false
-      for (const key of Object.keys(next)) {
-        (state.config as unknown as Record<string, unknown>)[key] = (next as unknown as Record<string, unknown>)[key]
-      }
-      if (backupsChanged) { state.quarantine.clear(); state.failures.clear(); state.perAgent.clear() }
-      providerCache = null
-      await persistConfig()
-      // 自定义子智能体清单变化 -> 重建工具（orchestrate / list-subagents 描述与查询提示随之更新）
-      if (agentsChanged) reinstallTools()
-      // 插件语言变化 -> 重新应用语言（失败自动回滚 zh），工具文案随之重建
-      if (langChanged) await applyLanguage().catch((e) => console.error('[ha] apply language failed', e))
+      await applyConfigNext(next)
       debugLog('info', 'rpc.stateSet', '配置已更新', {
         ha: patch && (patch as { ha?: unknown }).ha ? Object.keys((patch as { ha: Record<string, unknown> }).ha) : undefined,
         orch: patch && (patch as { orch?: unknown }).orch ? Object.keys((patch as { orch: Record<string, unknown> }).orch) : undefined,
@@ -1945,6 +1949,25 @@ async function apply(ctx: Context): Promise<void> {
           textChars: String(state.config.ctx.text || '').length,
         })
       }
+      return buildState({
+        subagents: subagentList(),
+        llmProviders: [],
+        defaultSelection: currentDefaultSelection(),
+      })
+    }
+    // 一键导出：完整配置 JSON 文本
+    stateExport(): { json: string } {
+      return { json: JSON.stringify(state.config, null, 2) }
+    }
+    // 一键导入：整体替换配置（缺失节回退默认），与 stateSet 相同的落盘/工具重建语义
+    async stateImport(args: { json?: string }): Promise<StateSnapshot & Record<string, unknown>> {
+      const json = args && args.json ? String(args.json) : ''
+      const parsed = parseConfigJson(json)
+      if (!parsed) throw new Error(t('sys.importInvalid'))
+      const next = sanitizeConfig(parsed, defaultConfig)
+      if (Object.keys(next).length === 0) throw new Error(t('sys.importInvalid'))
+      await applyConfigNext(next)
+      debugLog('info', 'rpc.stateImport', '配置已整体导入', { jsonChars: json.length })
       return buildState({
         subagents: subagentList(),
         llmProviders: [],
@@ -2098,6 +2121,8 @@ async function apply(ctx: Context): Promise<void> {
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'stateGet', 'stateGet', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'stateReload', 'stateReload', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'stateSet', 'stateSet', remoteInitializers)
+  decorateRemoteMethod(Remote, HaOrchestratorRpc, 'stateExport', 'stateExport', remoteInitializers)
+  decorateRemoteMethod(Remote, HaOrchestratorRpc, 'stateImport', 'stateImport', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'modelsList', 'modelsList', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'agentsGenerate', 'agentsGenerate', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haReset', 'haReset', remoteInitializers)

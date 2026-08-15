@@ -1034,3 +1034,40 @@ test('Phase2 /orchestrate presets：命令列出配方', async () => {
   assert.equal(res.kind, 'success')
   assert.ok(res.text.indexOf('audit') >= 0, '列表含配方名')
 })
+
+// ===================== Phase 3：UI 产品体验（后端支撑） =====================
+
+test('Phase3 stateExport/stateImport：配置导出与整体导入', async () => {
+  const { ctx, fs } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  // 导出
+  await rpc.stateSet({ patch: { orch: { maxAgents: 12 } } })
+  const exp = await rpc.stateExport()
+  const parsed = JSON.parse(exp.json)
+  assert.equal(parsed.orch.maxAgents, 12)
+  assert.equal(parsed.ha.enabled, true)
+  assert.ok(exp.json.indexOf('"ha"') >= 0)
+
+  // 导入整体替换（含 backups 与 maxAgents），缺失节回退默认
+  const imported = await rpc.stateImport({
+    json: JSON.stringify({
+      ha: { enabled: true, backups: [{ label: 'b1', provider: 'p9', model: 'm9' }], cooldownMs: 5000 },
+      orch: { maxAgents: 21 },
+    }),
+  })
+  assert.equal(imported.config.ha.backups.length, 1)
+  assert.equal(imported.config.orch.maxAgents, 21)
+  // 缺失节回退默认：debug 未提供 -> 默认
+  assert.equal(imported.config.debug.enabled, false)
+  // 落盘：重启后仍生效
+  const envB = envWithSharedFs(fs)
+  await mountPlugin(envB.ctx)
+  const snap = await envB.ctx.get('haOrchestrator').stateGet()
+  assert.equal(snap.config.orch.maxAgents, 21, '导入的配置持久化')
+  assert.equal(snap.config.ha.backups[0].provider, 'p9')
+
+  // 非法 JSON 报错
+  await assert.rejects(rpc.stateImport({ json: 'not-json{' }), /无效|Invalid|invalid/)
+})
