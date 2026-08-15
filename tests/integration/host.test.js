@@ -30,6 +30,7 @@ class FakeCtx {
     this.savedSelections = []
     this.events = [] // ctx.emit 记录（类型化会话事件）
     this.commandDefs = [] // commands.register 记录
+    this.skills = [] // skills.register 记录
     this.tools = { register: (tool) => { this.registered.push(tool); return () => {} } }
     this.reflect = {
       provide: (name, value) => { this._services.set(name, value); return () => {} },
@@ -164,6 +165,9 @@ function makeEnv() {
     sandboxPolicy: { resolve: () => ({ mode: 'workspace-write', workspaceRoot: 'C:/work' }) },
     commands: {
       register: (def) => { ctx.commandDefs.push(def); return () => {} },
+    },
+    skills: {
+      register: (skill) => { ctx.skills.push(skill); return () => {} },
     },
   }
   for (const [name, impl] of Object.entries(services)) ctx._services.set(name, impl)
@@ -1197,4 +1201,28 @@ test('Phase3 Run 卡片：orchestrate 结果含 runId 且展示投影齐备', as
   const resultView = tool.presentResult({}, { content: [], isError: false, meta })
   assert.equal(resultView.card, 'generic')
   assert.ok(resultView.title.indexOf('r-abc') >= 0, '完成态标题含 runId')
+})
+
+// ===================== Phase 4：随包 Skill =====================
+
+test('Phase4 随包 Skill：注册使用/排障技能（双语正文）', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  const skill = ctx.skills.find((s) => s.name === 'ha-orchestrator')
+  assert.ok(skill, 'skill 已注册')
+  assert.equal(skill.source, 'bundled')
+  assert.ok(skill.description.length > 0)
+  assert.ok(skill.whenToUse.length > 0)
+  assert.ok(skill.content.indexOf('ha-orchestrator') >= 0, '正文包含插件名')
+  assert.ok(skill.content.indexOf('/ha probe') >= 0, '正文包含排障命令')
+  assert.ok(skill.content.length > 300, '正文为完整 markdown 指引')
+
+  // 语言跟随：en 模式下正文为英文（skill 随语言重建，最新一条生效）
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { lang: { mode: 'en' } } })
+  const regs = ctx.skills.filter((s) => s.name === 'ha-orchestrator')
+  assert.ok(regs.length >= 2, '语言切换后 skill 重建')
+  const enSkill = regs[regs.length - 1]
+  assert.ok(enSkill.content.indexOf('troubleshooting') >= 0, 'en 正文生效')
 })

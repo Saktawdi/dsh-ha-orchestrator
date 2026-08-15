@@ -218,6 +218,8 @@ async function apply(ctx: Context): Promise<void> {
   let t: TFunc = (key, params) => translate(langDicts[langState.active], key, params)
   // 工具（orchestrate / list-subagents）是否已注册；语言变化后需要重建工具
   let orchestrateReady = false
+  // 随包 Skill 是否已注册；语言变化后需要重建（正文为当前语言）
+  let skillRegistered = false
   // 读取插件包内文件：优先 node:fs（插件包真实路径），失败回退 fs 服务
   async function readPluginFile(rel: string): Promise<string | null> {
     try {
@@ -276,6 +278,9 @@ async function apply(ctx: Context): Promise<void> {
     try {
       if (orchestrateReady) reinstallTools()
     } catch (e) { console.error('[ha] reinstall tools after language switch failed', e) }
+    try {
+      if (skillRegistered) reinstallSkill()
+    } catch (e) { console.error('[ha] reinstall skill after language switch failed', e) }
     debugLog('info', 'lang.apply', '插件语言已应用', {
       mode,
       dshLocale,
@@ -1691,7 +1696,7 @@ async function apply(ctx: Context): Promise<void> {
       const v = getService<unknown>(ctx, name)
       return '  - ' + name + ': ' + (v != null ? t('diag.available') : t('diag.missing'))
     }
-    for (const name of ['tools', 'systemPrompt', 'subagents', 'llm', 'fs', 'timer', 'settings', 'agents', 'agentDefaultModel', 'sandboxPolicy', 'commands']) {
+    for (const name of ['tools', 'systemPrompt', 'subagents', 'llm', 'fs', 'timer', 'settings', 'agents', 'agentDefaultModel', 'sandboxPolicy', 'commands', 'skills']) {
       lines.push(svc(name, true))
     }
     // 配置与持久化
@@ -1740,6 +1745,40 @@ async function apply(ctx: Context): Promise<void> {
   installHaCommand()
   ctx.effect(() => () => {
     try { if (haCommandDispose) haCommandDispose() } catch (e) { /* ignore */ }
+  })
+
+  // ================= 随包 Skill（使用/排障指引） =================
+  // 经 ctx.skills.register 注册运行时技能（模型/用户均可调用，随插件卸载）。
+  // skills 服务缺失（部分部署）时静默跳过，不影响插件其它能力。
+  let skillDispose: (() => void) | null = null
+  function installHaSkill(): void {
+    try { if (skillDispose) { skillDispose(); skillDispose = null } } catch (e) { /* ignore */ }
+    const skills = getService<{ register(skill: Record<string, unknown>): () => void }>(ctx, 'skills')
+    if (!skills || typeof skills.register !== 'function') {
+      console.warn('[ha] skill: skills service unavailable, skip')
+      return
+    }
+    try {
+      skillDispose = skills.register({
+        name: 'ha-orchestrator',
+        source: 'bundled',
+        description: t('skill.desc'),
+        whenToUse: t('skill.whenToUse'),
+        content: t('skill.body'),
+      })
+      skillRegistered = true
+      console.log('[ha] skill registered: ha-orchestrator')
+    } catch (e) {
+      console.error('[ha] register skill failed', e)
+    }
+  }
+  // 语言变化后重建 skill（正文为当前语言 markdown）
+  function reinstallSkill(): void {
+    installHaSkill()
+  }
+  installHaSkill()
+  ctx.effect(() => () => {
+    try { if (skillDispose) skillDispose() } catch (e) { /* ignore */ }
   })
 
   // ================= /orchestrate 命令（run 可观测） =================
@@ -2151,7 +2190,7 @@ async function apply(ctx: Context): Promise<void> {
     }
     // 加载/运行诊断：服务可用性、持久化、语言、注入状态（排障用）
     diagnostics(): Record<string, unknown> {
-      const names = ['tools', 'systemPrompt', 'subagents', 'llm', 'fs', 'timer', 'settings', 'agents', 'agentDefaultModel', 'sandboxPolicy', 'commands']
+      const names = ['tools', 'systemPrompt', 'subagents', 'llm', 'fs', 'timer', 'settings', 'agents', 'agentDefaultModel', 'sandboxPolicy', 'commands', 'skills']
       const services: Record<string, { present: boolean }> = {}
       for (const n of names) {
         const v = getService<unknown>(ctx, n)

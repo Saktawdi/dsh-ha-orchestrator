@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.11.0] - 2026-08-15
+
+### Added
+- Phase 4 随包 Skill 落地：经 `ctx.skills.register` 注册 `ha-orchestrator` 运行时技能（`source: 'bundled'`，模型/用户均可调用，随插件卸载）——双语 markdown 指引正文（使用方式 + 排障：/ha 命令、配置持久化、探测、常见问题），语言切换自动重建；`skills` 服务缺失的部署静默跳过；`/ha diag` 与 `diagnostics` RPC 增加 skills 服务探测。
+
 ## [0.10.0] - 2026-08-15
 
 ### Added

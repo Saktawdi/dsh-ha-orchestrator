@@ -259,8 +259,8 @@ ha-orchestrator/
   - Issue 模板（bug / feature / compatibility）已落地（v0.8.0）；
   - `CONTRIBUTING.md` 已落地（v0.8.0）；
   - 提交 awesome-dsh-plugin / dsh-suite 目录待 npm 发布后执行。
-- [ ] **可选 Skill**：
-  - 随包提供 `ha-orchestrator` 使用/排障 Skill（参考 `dsh-model-failover` 的 bundled skill 模式）待补。
+- [x] **可选 Skill**：
+  - 随包提供 `ha-orchestrator` 使用/排障 Skill 已落地：`ctx.skills.register` 运行时注册（source=bundled，双语 markdown 正文，语言切换自动重建，skills 缺失部署静默跳过）（v0.11.0）。
 
 ---
 
