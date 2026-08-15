@@ -40,8 +40,11 @@ import {
   hasFallback as haHasFallback,
   maxRetriesFor as haMaxRetriesFor,
   computeFailingKey as haComputeFailingKey,
+  countQuarantinedModels as haCountQuarantinedModels,
+  serializeHaState as haSerializeState,
+  deserializeHaState as haDeserializeState,
 } from './ha-core.js'
-import type { HaState, HistoryEntry, PerAgentEntry, FallbackCandidate } from './ha-core.js'
+import type { HaState, HistoryEntry, PerAgentEntry, FallbackCandidate, QuarantineEntry } from './ha-core.js'
 import {
   buildSubagentRequest,
   buildSupervisorPrompt,
@@ -73,6 +76,8 @@ import type {
   AgentLike,
   AgentDefaultModelService,
   SandboxPolicyService,
+  CommandsService,
+  CommandInvocationLike,
 } from './types.js'
 
 const name = 'ha-orchestrator'
@@ -148,16 +153,28 @@ async function apply(ctx: Context): Promise<void> {
     perAgent: HaState['perAgent']
     history: HaState['history']
     debugLogs: DebugLogEntry[]
+    probeLog: Array<{ at: string; key: string; ok: boolean; reason?: string }>
   } = {
     config: JSON.parse(JSON.stringify(defaultConfig)) as Config,
     ...createHaState(),
     debugLogs: [],
+    probeLog: [],
   }
   let providerCache: Set<string> | null = null
   let providerCacheAt = 0
   const BACKOFF_BASE_MS = 250
   const BACKOFF_CAP_MS = 5000
   const DEBUG_LOG_CAP = 500
+  // 错误分类：不可重试错误（鉴权/适配器缺失）不消耗阈值，直接隔离切换
+  const NON_RETRYABLE_CODES = ['INVALID_CREDENTIAL', 'AUTH', 'UNAUTHORIZED', 'NO_ADAPTER']
+  const CONTEXT_WINDOW_CODE = 'CONTEXT_WINDOW_EXCEEDED'
+  // HA 运行态持久化文件（隔离/失败计数/游标/历史），与配置文件同目录
+  const HA_STATE_FILE = 'ha-orchestrator.ha.json'
+  const HA_PERSIST_DEBOUNCE_MS = 500
+  const PROBE_LOG_CAP = 20
+  // 探测失败后的重试间隔：不短于冷却、封顶 5 分钟，避免无限增长
+  const PROBE_RETRY_MIN_MS = 60 * 1000
+  const PROBE_RETRY_MAX_MS = 5 * 60 * 1000
 
   // ================= 语言系统 =================
   // 语言包位于插件包根目录 `.language/`（zh.json / en.json），键集以 zh.json 为基准。
@@ -302,11 +319,199 @@ async function apply(ctx: Context): Promise<void> {
   function isExactQuarantined(provider: string, model: string): boolean { return haIsExactQuarantined(state, provider, model, now()) }
   function isBlocked(provider: string, model?: string | null): boolean { return haIsBlocked(state, provider, model, now()) }
   function entryFor(agentId: string): PerAgentEntry { return haEntryFor(state, agentId) }
-  function setEntry(agentId: string, patch: Partial<PerAgentEntry>): void { haSetEntry(state, agentId, patch) }
-  function bumpFailure(k: string): number { return haBumpFailure(state, state.config.ha, k, now()) }
-  function quarantineKey(k: string, code?: string): void { haQuarantineKey(state, state.config.ha, k, code, now()) }
+  function setEntry(agentId: string, patch: Partial<PerAgentEntry>): void {
+    haSetEntry(state, agentId, patch)
+    scheduleHaPersist()
+  }
+  function bumpFailure(k: string): number {
+    const count = haBumpFailure(state, state.config.ha, k, now())
+    scheduleHaPersist()
+    return count
+  }
+  function quarantineKey(k: string, code?: string, level: 'model' | 'provider' = 'model'): void {
+    haQuarantineKey(state, state.config.ha, k, code, now(), level)
+    scheduleHaPersist()
+  }
   function record(agentId: string, fromKey: string, target: { provider: string; model: string }, code?: string): void {
     haRecordHistory(state, agentId, fromKey, target, code, now())
+    scheduleHaPersist()
+  }
+  // ---- HA 运行态持久化（防抖写盘，重启恢复） ----
+  // 隔离/失败计数/游标/历史是“可恢复状态”：进程重启后若丢失，会导致
+  // 已熔断模型被立即重试（再次踩雷）。写入走与配置文件相同的存储目录逻辑。
+  let haPersistPending = false
+  function scheduleHaPersist(): void {
+    if (haPersistPending) return
+    haPersistPending = true
+    const timer = getService<TimerService>(ctx, 'timer')
+    if (timer && typeof timer.timeout === 'function') {
+      try {
+        timer.timeout(() => { haPersistPending = false; void persistHaState() }, HA_PERSIST_DEBOUNCE_MS)
+        return
+      } catch (e) { /* 落到立即写 */ }
+    }
+    haPersistPending = false
+    void persistHaState()
+  }
+  async function persistHaState(): Promise<void> {
+    // 状态全空时不留文件（首次安装/重置后不产生噪音）
+    if (state.quarantine.size === 0 && state.failures.size === 0 && state.perAgent.size === 0 && state.history.length === 0) return
+    const fsService = fsServiceNow()
+    if (!fsService || typeof fsService.writeText !== 'function') return
+    const text = JSON.stringify(haSerializeState(state), null, 2)
+    const dirs = activeStorageDir ? [activeStorageDir] : storageDirs()
+    for (const dir of dirs) {
+      const target = await resolveStorageTargetIn(dir, HA_STATE_FILE)
+      if (!target) continue
+      try {
+        await fsService.writeText(target, text)
+        return
+      } catch (e) { /* 下一个目录 */ }
+    }
+  }
+  async function loadPersistedHaState(): Promise<boolean> {
+    const text = await readStorageText(HA_STATE_FILE)
+    if (text == null) return false
+    const restored = haDeserializeState(text)
+    if (!restored) {
+      console.warn('[ha] HA state file malformed, ignored: ' + HA_STATE_FILE)
+      return false
+    }
+    haClearExpired(restored, now())
+    state.quarantine = restored.quarantine
+    state.failures = restored.failures
+    state.perAgent = restored.perAgent
+    state.history = restored.history
+    console.log('[ha] HA runtime state restored (' + state.quarantine.size + ' quarantines, ' + state.failures.size + ' failures, ' + state.history.length + ' history)')
+    debugLog('info', 'ha.restored', 'HA 运行态已恢复', { quarantine: state.quarantine.size, failures: state.failures.size, history: state.history.length })
+    emitHaEvent('ha/state-restored', { quarantine: state.quarantine.size, failures: state.failures.size, history: state.history.length })
+    scheduleProbesForActive()
+    return true
+  }
+  let haStateLoaded = false
+  async function ensureHaStateLoaded(): Promise<void> {
+    if (haStateLoaded) return
+    haStateLoaded = true
+    try { await loadPersistedHaState() } catch (e) { console.error('[ha] load persisted HA state failed', e) }
+  }
+  // ---- 类型化会话事件（可观测性） ----
+  // ha/failover、ha/circuit-opened、ha/circuit-closed、ha/probe、ha/state-restored。
+  // 事件名不在 cordis 核心 Events 声明内，经窄化签名发出；载荷为纯 JSON。
+  function emitHaEvent(name: string, payload: Record<string, unknown>): void {
+    try {
+      ;(ctx.emit as (n: string, p: unknown) => unknown)(name, payload)
+    } catch (e) { /* 事件监听器抛错不影响主流程 */ }
+  }
+  // ---- 真实探测恢复 ----
+  // 冷却到期后用小成本调用（maxTokens=1）验证隔离模型是否恢复：
+  // 成功 -> 解除隔离（circuit-closed）；失败 -> 延长冷却并再次安排探测。
+  // provider 通配键不直接探测：到期即解除（circuit-closed, reason=expired）。
+  function scheduleProbe(key: string, delayMs: number): void {
+    const timer = getService<TimerService>(ctx, 'timer')
+    const doProbe = (): void => { void runProbe(key) }
+    if (timer && typeof timer.timeout === 'function') {
+      try { timer.timeout(doProbe, Math.max(0, delayMs)); return } catch (e) { /* 落到立即执行 */ }
+    }
+    doProbe()
+  }
+  function scheduleProbesForActive(): void {
+    if (!state.config.ha.probeEnabled) return
+    const tNow = now()
+    for (const [k, v] of state.quarantine) {
+      const delay = v.until - tNow
+      if (delay > 0) scheduleProbe(k, delay)
+    }
+  }
+  // 新隔离产生时安排到期探测（调用点：隔离之后）
+  function scheduleProbeFor(key: string): void {
+    if (!state.config.ha.probeEnabled) return
+    const entry = state.quarantine.get(key)
+    if (!entry) return
+    const delay = entry.until - now()
+    if (delay > 0) scheduleProbe(key, delay)
+  }
+  async function probeOnce(provider: string, model: string): Promise<{ ok: boolean; reason?: string }> {
+    const llm = getService<LlmService>(ctx, 'llm')
+    if (!llm || typeof llm.stream !== 'function') return { ok: false, reason: 'no-llm-service' }
+    const signal = new AbortController().signal
+    const request = {
+      provider,
+      model,
+      maxTokens: 1,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+      signal,
+    }
+    try {
+      let iterate: AsyncIterable<unknown>
+      if (typeof llm.prepareCall === 'function') {
+        const prepared = await llm.prepareCall({ provider, model, maxTokens: 1 }, signal)
+        iterate = typeof prepared.stream === 'function' ? prepared.stream(request) : llm.stream(request)
+      } else {
+        iterate = llm.stream(request)
+      }
+      for await (const _chunk of iterate) break
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, reason: String((e && (e as Error).message) || e) }
+    }
+  }
+  function recordProbe(key: string, ok: boolean, reason?: string): void {
+    state.probeLog.unshift({ at: new Date().toISOString(), key, ok, reason })
+    if (state.probeLog.length > PROBE_LOG_CAP) state.probeLog.splice(PROBE_LOG_CAP)
+  }
+  async function runProbe(key: string, force = false): Promise<{ ok: boolean; reason?: string; key: string }> {
+    const entry = state.quarantine.get(key)
+    const cfg = state.config.ha
+    if (!cfg.enabled || !cfg.probeEnabled) return { ok: false, reason: 'probe-disabled', key }
+    const parts = splitKey(key)
+    if (!entry) return { ok: false, reason: 'not-quarantined', key }
+    // 已被重新隔离（更长的冷却）-> 顺延到新到期点；force（手动探测）跳过此检查
+    if (!force && entry.until > now()) {
+      scheduleProbe(key, entry.until - now())
+      return { ok: false, reason: 'rescheduled', key }
+    }
+    const tNow = now()
+    // provider 通配键：不探测，到期即解除
+    if (parts[1] === '*') {
+      state.quarantine.delete(key)
+      scheduleHaPersist()
+      emitHaEvent('ha/circuit-closed', { key, level: entry.level || 'provider', reason: 'expired' })
+      recordProbe(key, true, 'expired')
+      return { ok: true, reason: 'expired', key }
+    }
+    const res = await probeOnce(parts[0], parts[1])
+    recordProbe(key, res.ok, res.reason)
+    emitHaEvent('ha/probe', { key, at: new Date().toISOString(), ok: res.ok, reason: res.reason || '' })
+    debugLog('info', 'ha.probe', '探测结果', { key, ok: res.ok, reason: res.reason || '' })
+    if (res.ok) {
+      state.quarantine.delete(key)
+      scheduleHaPersist()
+      emitHaEvent('ha/circuit-closed', { key, level: entry.level || 'model', reason: 'probe' })
+      console.log('[ha] probe ok, circuit closed ' + key)
+      return { ok: true, key }
+    }
+    // 未恢复：延长冷却并再次探测（间隔 [60s, 5min]）
+    const retryIn = Math.min(PROBE_RETRY_MAX_MS, Math.max(cfg.cooldownMs, PROBE_RETRY_MIN_MS))
+    state.quarantine.set(key, { ...entry, until: tNow + retryIn })
+    scheduleHaPersist()
+    scheduleProbe(key, retryIn)
+    console.log('[ha] probe failed, keep quarantine ' + key + ' (' + (res.reason || 'unknown') + '), retry in ' + retryIn + 'ms')
+    return { ok: false, reason: res.reason, key }
+  }
+  // ---- 两层熔断：provider 级阈值 ----
+  function maybeOpenProviderCircuit(provider: string): void {
+    const cfg = state.config.ha
+    const threshold = Number(cfg.providerThreshold) || 0
+    if (threshold <= 0) return
+    const providerKey = keyOf(provider, '*')
+    if (state.quarantine.has(providerKey)) return
+    const models = haCountQuarantinedModels(state, provider, now())
+    if (models >= threshold) {
+      quarantineKey(providerKey, 'PROVIDER_CIRCUIT', 'provider')
+      scheduleProbeFor(providerKey)
+      console.log('[ha] provider circuit opened ' + provider + ' (' + models + ' models quarantined)')
+      emitHaEvent('ha/circuit-opened', { key: providerKey, level: 'provider', code: 'PROVIDER_CIRCUIT', cooldownMs: cfg.cooldownMs })
+    }
   }
   function registeredProviders(): Set<string> {
     const tNow = now()
@@ -467,6 +672,7 @@ async function apply(ctx: Context): Promise<void> {
       debugLog('info', 'config.restored.retry', '配置在服务就绪后恢复')
       try { reinstallTools() } catch (e) { console.error('[ha] reinstall tools after config retry failed', e) }
       await applyLanguage().catch((e) => console.error('[ha] apply language after config retry failed', e))
+      await ensureHaStateLoaded().catch((e) => console.error('[ha] load HA state after retry failed', e))
       return
     }
     scheduleConfigLoadRetry()
@@ -487,6 +693,7 @@ async function apply(ctx: Context): Promise<void> {
         if (!ok) return
         try { reinstallTools() } catch (e) { console.error('[ha] reinstall tools after lazy config load failed', e) }
         await applyLanguage().catch((e) => console.error('[ha] apply language after lazy config load failed', e))
+        await ensureHaStateLoaded().catch((e) => console.error('[ha] load HA state after lazy config load failed', e))
       }).catch((e) => {
         configLoadPromise = null
         console.error('[ha] lazy config load failed', e)
@@ -556,6 +763,8 @@ async function apply(ctx: Context): Promise<void> {
   // 失败自动回滚 zh。必须在 orchestrate 工具构建之前执行，
   // 保证工具 description 从一开始就使用正确的语言文案。
   await applyLanguage()
+  // HA 运行态恢复：隔离/失败计数/游标/历史（fs 不可用时随配置重试路径补载）
+  await ensureHaStateLoaded()
   debugLog('info', 'plugin.ready', '静态插件已就绪（调试模式开启，开始记录事件）')
 
   // ================= 高可用：失败回退 =================
@@ -568,6 +777,16 @@ async function apply(ctx: Context): Promise<void> {
       if (!config || !config.provider || !config.model) return config
       const k = keyOf(config.provider, config.model)
       setEntry(payload.agent.id, { lastKey: k })
+      // CONTEXT_WINDOW_EXCEEDED 降级：上一次请求因上下文超长失败且开启降级时，
+      // 本请求去掉 reasoningEffort 重试（标记用后即清）
+      const entry = entryFor(payload.agent.id)
+      if (entry.degradeReasoning) {
+        const stripped: Record<string, unknown> = {}
+        for (const key of Object.keys(config)) if (key !== 'reasoningEffort') stripped[key] = (config as unknown as Record<string, unknown>)[key]
+        setEntry(payload.agent.id, { degradeReasoning: false })
+        debugLog('info', 'ha.degrade', '上下文超长降级：去掉 reasoningEffort 重试', { agent: payload.agent.id, provider: config.provider, model: config.model })
+        return stripped as unknown as LlmCallConfig
+      }
       debugLog('debug', 'ha.request', '模型请求进入', { agent: payload.agent.id, provider: config.provider, model: config.model })
       if (!isBlocked(config.provider, config.model)) {
         // 仅在该模型无未过期失败累积（真正健康）时清零重试计数，避免阈值累积期被误清零
@@ -581,7 +800,6 @@ async function apply(ctx: Context): Promise<void> {
         return config
       }
       // 实际切换点：只有这里才推进游标并写历史，保证记录与实际使用一致
-      const entry = entryFor(payload.agent.id)
       record(payload.agent.id, k, target, entry.failCode || '')
       setEntry(payload.agent.id, { lastKey: target.key, failCode: '' })
       if (cfg.persistSelection) tryPersist(target)
@@ -590,6 +808,13 @@ async function apply(ctx: Context): Promise<void> {
         from: config.provider + '/' + config.model,
         to: target.provider + '/' + target.model,
         code: entry.failCode || '',
+      })
+      emitHaEvent('ha/failover', {
+        agent: payload.agent.id,
+        from: config.provider + '/' + config.model,
+        to: target.provider + '/' + target.model,
+        code: entry.failCode || '',
+        at: new Date().toISOString(),
       })
       const rest: Record<string, unknown> = {}
       for (const key of Object.keys(config)) if (key !== 'reasoningEffort') rest[key] = (config as unknown as Record<string, unknown>)[key]
@@ -615,6 +840,35 @@ async function apply(ctx: Context): Promise<void> {
       // 精确键优先（agent/request 已记录 lastKey），拿不到才降级 provider 通配键
       const failingKey = haComputeFailingKey(entry, provider)
       const maxRetries = haMaxRetriesFor(cfg)
+      // ---- 错误分类策略 ----
+      // 不可重试错误（鉴权/适配器缺失）：重试原模型无意义，直接隔离并切备用；
+      // 不消耗阈值计数（阈值只针对可重试的瞬时故障）。
+      if (NON_RETRYABLE_CODES.indexOf(code) >= 0) {
+        if ((entry.retries || 0) >= maxRetries) {
+          debugLog('warn', 'ha.budget', '重试预算耗尽，放行（电路熔断）', { agent: agent.id, failingKey, retries: entry.retries || 0, maxRetries })
+          return next()
+        }
+        if (!hasFallback(agent.id, failingKey)) return next()
+        quarantineKey(failingKey, code)
+        scheduleProbeFor(failingKey)
+        setEntry(agent.id, { retries: (entry.retries || 0) + 1, failCode: code })
+        console.log('[ha] non-retryable failover ' + agent.id + ' ' + failingKey + ' (' + code + ')')
+        emitHaEvent('ha/circuit-opened', { key: failingKey, level: 'model', code, cooldownMs: cfg.cooldownMs })
+        maybeOpenProviderCircuit(provider)
+        return { kind: 'retry' }
+      }
+      // ---- CONTEXT_WINDOW_EXCEEDED：可选降级（去 reasoningEffort 重试原模型） ----
+      if (code === CONTEXT_WINDOW_CODE && cfg.degradeContextWindow) {
+        if ((entry.retries || 0) >= maxRetries) {
+          debugLog('warn', 'ha.budget', '降级重试预算耗尽，放行', { agent: agent.id, failingKey, retries: entry.retries || 0, maxRetries })
+          return next()
+        }
+        setEntry(agent.id, { degradeReasoning: true, retries: (entry.retries || 0) + 1 })
+        debugLog('info', 'ha.degrade.set', '上下文超长：标记降级重试', { agent: agent.id, failingKey, retry: (entry.retries || 0) + 1 })
+        await backoff((entry.retries || 0) + 1)
+        return { kind: 'retry' }
+      }
+      // ---- 可重试错误：阈值 + 滑动窗口 + 冷却 ----
       if ((entry.retries || 0) >= maxRetries) {
         debugLog('warn', 'ha.budget', '重试预算耗尽，放行（电路熔断）', { agent: agent.id, failingKey, retries: entry.retries || 0, maxRetries })
         return next()
@@ -633,9 +887,13 @@ async function apply(ctx: Context): Promise<void> {
         return next()
       }
       quarantineKey(failingKey, code)
+      scheduleProbeFor(failingKey)
       setEntry(agent.id, { retries: nextRetries, failCode: code })
       console.log('[ha] failover ' + agent.id + ' ' + failingKey + ' (quarantined, ' + code + ')')
       debugLog('warn', 'ha.quarantine', '隔离失败模型并重试备用', { agent: agent.id, key: failingKey, code, cooldownMs: cfg.cooldownMs, retry: nextRetries })
+      emitHaEvent('ha/circuit-opened', { key: failingKey, level: 'model', code, cooldownMs: cfg.cooldownMs })
+      // 模型级熔断后检查 provider 级阈值（两层熔断）
+      maybeOpenProviderCircuit(provider)
       await backoff(nextRetries)
       return { kind: 'retry' }
     } catch (e) {
@@ -658,7 +916,10 @@ async function apply(ctx: Context): Promise<void> {
       const entry = entryFor(agent.id)
       const failingKey = entry.lastKey || ''
       // 关键：先隔离失败模型，保证下一次请求（无论手动还是自动唤醒）直接用备用模型
-      if (failingKey) quarantineKey(failingKey, code)
+      if (failingKey) {
+        quarantineKey(failingKey, code)
+        scheduleProbeFor(failingKey)
+      }
       if (entry.steeredTurn === turn) return
       if (!hasFallback(agent.id, failingKey)) return
       setEntry(agent.id, { steeredTurn: turn, failCode: code })
@@ -1013,6 +1274,113 @@ async function apply(ctx: Context): Promise<void> {
     try { if (contextInjectDispose) contextInjectDispose() } catch (e) { /* ignore */ }
   })
 
+  // ================= /ha 命令（可观测性） =================
+  // 查看 HA 状态 / 重置 / 手动探测。commands 服务懒注册（带重试），不加入
+  // inject：部分部署可能没有该服务，插件不应因此加载失败。
+  let haCommandDispose: (() => void) | null = null
+  let haCommandRetries = 0
+  const HA_COMMAND_MAX_RETRIES = 30
+  function installHaCommand(): void {
+    try { if (haCommandDispose) { haCommandDispose(); haCommandDispose = null } } catch (e) { /* ignore */ }
+    const commands = getService<CommandsService>(ctx, 'commands')
+    if (!commands || typeof commands.register !== 'function') {
+      console.warn('[ha] /ha command: commands service unavailable (attempt ' + (haCommandRetries + 1) + '/30), retrying in 2s')
+      scheduleHaCommandRetry()
+      return
+    }
+    try {
+      haCommandDispose = commands.register({
+        name: 'ha',
+        description: t('ha.cmdDesc'),
+        input: { hint: '[status|reset|probe <provider> <model>]' },
+        handler: (invocation: CommandInvocationLike) => handleHaCommand(invocation),
+      })
+      haCommandRetries = 0
+      console.log('[ha] /ha command registered')
+    } catch (e) {
+      console.error('[ha] register /ha command failed', e)
+      scheduleHaCommandRetry()
+    }
+  }
+  function scheduleHaCommandRetry(): void {
+    if (haCommandRetries >= HA_COMMAND_MAX_RETRIES) return
+    haCommandRetries += 1
+    const timer = getService<TimerService>(ctx, 'timer')
+    if (!timer || typeof timer.timeout !== 'function') return
+    try { timer.timeout(() => installHaCommand(), 2000) } catch (e) { /* ignore */ }
+  }
+  function haStatusText(): string {
+    clearExpired()
+    const lines: string[] = []
+    const cfg = state.config.ha
+    lines.push(t('ha.statusHead') + ' [' + (cfg.enabled ? t('ha.statusEnabled') : t('ha.statusDisabled')) + ']')
+    lines.push(t('ha.statusQuarantine', { n: state.quarantine.size }))
+    if (state.quarantine.size > 0) {
+      for (const [k, v] of state.quarantine) {
+        const parts = splitKey(k)
+        const remaining = Math.max(0, Math.round((v.until - now()) / 1000)) + 's'
+        lines.push('  - ' + parts[0] + '/' + parts[1] + ' [' + (v.level || 'model') + '] ' + (v.code || '') + ' ' + remaining)
+      }
+    }
+    lines.push(t('ha.statusFailures', { n: state.failures.size }))
+    if (state.failures.size > 0) {
+      for (const [k, v] of state.failures) {
+        const parts = splitKey(k)
+        lines.push('  - ' + parts[0] + '/' + parts[1] + ' x' + v.count)
+      }
+    }
+    lines.push(t('ha.statusCursors', { n: state.perAgent.size }))
+    lines.push(t('ha.statusHistory', { n: state.history.length }))
+    if (state.history.length > 0) {
+      for (const h of state.history.slice(-5)) {
+        lines.push('  - ' + h.at.slice(11, 19) + ' ' + h.agent + ': ' + h.from + ' -> ' + h.to + (h.code ? ' (' + h.code + ')' : ''))
+      }
+    }
+    lines.push(t('ha.statusProbes', { n: state.probeLog.length }))
+    if (state.probeLog.length > 0) {
+      for (const p of state.probeLog.slice(0, 3)) {
+        lines.push('  - ' + p.at.slice(11, 19) + ' ' + p.key + ' ' + (p.ok ? 'ok' : 'fail' + (p.reason ? ' (' + p.reason + ')' : '')))
+      }
+    }
+    return lines.join('\n')
+  }
+  async function handleHaCommand(invocation: CommandInvocationLike): Promise<{ kind: 'success' | 'error'; text: string }> {
+    try {
+      const rest = String((invocation && invocation.input) || '').trim()
+      const parts = rest.split(/\s+/).filter(Boolean)
+      const verb = (parts[0] || 'status').toLowerCase()
+      if (verb === 'reset' || verb === 'clear') {
+        state.quarantine.clear()
+        state.failures.clear()
+        state.perAgent.clear()
+        state.history = []
+        state.probeLog = []
+        scheduleHaPersist()
+        debugLog('info', 'ha.cmd.reset', '/ha reset 已执行')
+        return { kind: 'success', text: t('ha.resetDone') }
+      }
+      if (verb === 'probe') {
+        const provider = parts[1] || ''
+        const model = parts[2] || ''
+        if (!provider || !model) return { kind: 'error', text: t('ha.probeUsage') }
+        const res = await runProbe(keyOf(provider, model))
+        return {
+          kind: 'success',
+          text: res.ok
+            ? t('ha.probeOk', { provider, model })
+            : t('ha.probeFail', { provider, model, reason: res.reason || '' }),
+        }
+      }
+      return { kind: 'success', text: haStatusText() }
+    } catch (e) {
+      return { kind: 'error', text: String((e && (e as Error).message) || e) }
+    }
+  }
+  installHaCommand()
+  ctx.effect(() => () => {
+    try { if (haCommandDispose) haCommandDispose() } catch (e) { /* ignore */ }
+  })
+
   // ================= 语言系统：运行期跟随 DSH =================
   // 启动切换已在工具注册前完成（见 loadPersistedConfig 之后）；
   // auto 模式下 DSH 语言在运行期变化（用户改 DSH 语言）时自动跟随
@@ -1234,8 +1602,84 @@ async function apply(ctx: Context): Promise<void> {
       state.failures.clear()
       state.perAgent.clear()
       state.history = []
+      state.probeLog = []
+      scheduleHaPersist()
       debugLog('info', 'ha.reset', '清除隔离、失败计数与历史')
       return buildState({})
+    }
+    // HA 运行态详情：隔离（含层级）/失败计数/游标/历史/探测记录
+    haStatus(): Record<string, unknown> {
+      clearExpired()
+      const out: Record<string, unknown> = {
+        enabled: state.config.ha.enabled,
+        config: {
+          backups: state.config.ha.backups,
+          cooldownMs: state.config.ha.cooldownMs,
+          threshold: state.config.ha.threshold,
+          burstWindowMs: state.config.ha.burstWindowMs,
+          providerThreshold: state.config.ha.providerThreshold,
+          probeEnabled: state.config.ha.probeEnabled,
+          degradeContextWindow: state.config.ha.degradeContextWindow,
+          codes: state.config.ha.codes,
+        },
+        quarantine: [],
+        failures: [],
+        cursors: [],
+        history: state.history.slice(-20).reverse(),
+        probes: { last: state.probeLog.slice(0, 20), pending: [] },
+      }
+      const tNow = now()
+      for (const [k, v] of state.quarantine) {
+        const parts = splitKey(k)
+        ;(out.quarantine as Array<Record<string, unknown>>).push({
+          provider: parts[0],
+          model: parts[1],
+          level: v.level || 'model',
+          code: v.code || '',
+          remainingMs: Math.max(0, v.until - tNow),
+        })
+        if (v.until > tNow) (out.probes as { pending: Array<Record<string, unknown>> }).pending.push({ key: k, at: new Date(v.until).toISOString() })
+      }
+      for (const [k, v] of state.failures) {
+        const parts = splitKey(k)
+        ;(out.failures as Array<Record<string, unknown>>).push({ provider: parts[0], model: parts[1], count: v.count, remainingMs: Math.max(0, v.until - tNow) })
+      }
+      for (const [agentId, e] of state.perAgent) {
+        ;(out.cursors as Array<Record<string, unknown>>).push({ agent: agentId, index: e.index || 0, lastKey: e.lastKey || '', retries: e.retries || 0, failCode: e.failCode || '', steeredTurn: e.steeredTurn || 0, degradeReasoning: !!e.degradeReasoning })
+      }
+      return out
+    }
+    // 手动触发探测：隔离中的键 -> 成功后解除隔离；未隔离的键 -> 仅探测不改状态
+    async haProbeNow(args: { provider?: string; model?: string }): Promise<{ ok: boolean; reason?: string; key: string }> {
+      const provider = args && args.provider ? String(args.provider) : ''
+      const model = args && args.model ? String(args.model) : ''
+      if (!provider || !model) throw new Error('haProbeNow: provider/model required')
+      // force=true：手动探测无视冷却剩余时间，立即验证
+      return runProbe(keyOf(provider, model), true)
+    }
+    // 推荐备份候选：从已注册 provider x 模型目录挑选（排除当前默认选择），供配置向导使用
+    async haSuggestBackups(): Promise<Array<{ provider: string; model: string; name: string }>> {
+      const suggestions: Array<{ provider: string; model: string; name: string }> = []
+      const defaultSel = currentDefaultSelection()
+      const llm = getService<LlmService>(ctx, 'llm')
+      if (!llm) return suggestions
+      let providers: Array<{ id?: string; provider?: string; name?: string } | string> = []
+      try { providers = llm.listProviders() } catch (e) { providers = [] }
+      for (const p of providers) {
+        const provider = String((p && (p as { id?: string }).id) || (p as { provider?: string }).provider || (p as { name?: string }).name || p)
+        if (!provider) continue
+        if (defaultSel && defaultSel.provider === provider) continue
+        let models: Array<{ provider?: string; id?: string; model?: string; name?: string } | string> = []
+        try { models = await llm.listModels(provider) } catch (e) { models = [] }
+        for (const m of models) {
+          const model = String((m && (m as { id?: string }).id) || (m as { model?: string }).model || (m as { name?: string }).name || m)
+          if (!model) continue
+          const name = String((m && (m as { name?: string }).name) || model)
+          suggestions.push({ provider, model, name })
+          if (suggestions.length >= 20) return suggestions
+        }
+      }
+      return suggestions
     }
     debugLogs(): { enabled: boolean; logs: DebugLogEntry[] } {
       return { enabled: debugEnabled(), logs: state.debugLogs.slice() }
@@ -1252,6 +1696,9 @@ async function apply(ctx: Context): Promise<void> {
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'modelsList', 'modelsList', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'agentsGenerate', 'agentsGenerate', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haReset', 'haReset', remoteInitializers)
+  decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haStatus', 'haStatus', remoteInitializers)
+  decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haProbeNow', 'haProbeNow', remoteInitializers)
+  decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haSuggestBackups', 'haSuggestBackups', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'debugLogs', 'debugLogs', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'debugClear', 'debugClear', remoteInitializers)
   new HaOrchestratorRpc()

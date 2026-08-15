@@ -28,6 +28,8 @@ class FakeCtx {
     this.subagentCalls = [] // subagents.start 记录
     this.steers = [] // agent.steer 记录
     this.savedSelections = []
+    this.events = [] // ctx.emit 记录（类型化会话事件）
+    this.commandDefs = [] // commands.register 记录
     this.tools = { register: (tool) => { this.registered.push(tool); return () => {} } }
     this.reflect = {
       provide: (name, value) => { this._services.set(name, value); return () => {} },
@@ -58,6 +60,7 @@ class FakeCtx {
   }
 
   async emit(name, payload) {
+    this.events.push({ name, payload })
     for (const { fn } of this._listeners.get(name) || []) await fn(payload)
   }
 }
@@ -86,7 +89,7 @@ function makeFs() {
 // ---------- 可注入假服务的环境 ----------
 function makeEnv() {
   const fs = makeFs()
-  const state = { locale: 'zh' }
+  const state = { locale: 'zh', probeMode: 'ok' }
   const subagentOutputs = new Map() // label -> 输出文本
   const ctx = new FakeCtx()
   const fakeAgent = {
@@ -115,14 +118,21 @@ function makeEnv() {
     fs: fs.service,
     settings: { get: (ns) => (ns === 'locale' ? { preference: state.locale } : undefined) },
     timer: {
+      // fire-and-forget 形态带真实延迟（封顶 100ms，unref 不阻塞退出）；
+      // await 形态立即 resolve（backoff 用）
       timeout(fnOrMs, ms) {
-        if (typeof fnOrMs === 'function') { setTimeout(fnOrMs, 0); return {} }
+        if (typeof fnOrMs === 'function') { setTimeout(fnOrMs, Math.min(ms || 0, 100)).unref(); return {} }
         return Promise.resolve()
       },
     },
     llm: {
       listProviders: () => [{ id: 'p0' }, { id: 'p1' }],
       listModels: async (p) => [{ id: 'm0', name: 'Model M0' }, { id: 'm1' }],
+      // 探测用小成本流式调用：probeMode = 'fail' 时抛错（模拟未恢复）
+      stream(options) {
+        if (state.probeMode === 'fail') throw new Error('probe upstream error: 503')
+        return (async function* () { yield { type: 'text', text: 'pong' } })()
+      },
     },
     subagents,
     systemPrompt: { section: (opts) => { ctx.sections.push(opts); return () => {} } },
@@ -136,6 +146,9 @@ function makeEnv() {
     },
     launchEnvironment: { get: (k) => ({ value: 'C:/dsh-home' }) },
     sandboxPolicy: { resolve: () => ({ mode: 'workspace-write', workspaceRoot: 'C:/work' }) },
+    commands: {
+      register: (def) => { ctx.commandDefs.push(def); return () => {} },
+    },
   }
   for (const [name, impl] of Object.entries(services)) ctx._services.set(name, impl)
   return { ctx, fs, state, subagents, subagentOutputs, fakeAgent }
@@ -296,8 +309,8 @@ test('HA 停止兜底：agent/error 隔离失败模型并延迟 steer', async ()
   const snap = await rpc.stateGet()
   assert.ok(snap.quarantine.some((q) => q.provider === 'p0' && q.model === 'm0'), '停止后隔离失败模型')
 
-  // 延迟 steer（timer 0ms -> setTimeout 宏任务）
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  // 延迟 steer（timer 延迟 ≤100ms）
+  await new Promise((resolve) => setTimeout(resolve, 250))
   assert.equal(ctx.steers.length, 1)
   assert.ok(ctx.steers[0].content[0].text.length > 0, 'steer 文本非空')
   assert.equal(ctx.steers[0].source.plugin, 'ha-orchestrator')
@@ -471,4 +484,229 @@ test('模型列表与默认选择：stateGet 附带 llmProviders / defaultSelect
   const models = await rpc.modelsList({ provider: 'p0' })
   assert.equal(models.length, 2)
   assert.equal(models[0].model, 'm0')
+})
+
+// ===================== Phase 1：HA 能力补强集成测试 =====================
+
+test('Phase1 类型化事件：failover / circuit-opened 发出', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'RATE_LIMIT' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+  await ctx.waterfall('agent/request', { turn: 2, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+
+  const names = ctx.events.map((e) => e.name)
+  assert.ok(names.indexOf('ha/circuit-opened') >= 0, '含 ha/circuit-opened: ' + names.join(','))
+  assert.ok(names.indexOf('ha/failover') >= 0, '含 ha/failover: ' + names.join(','))
+  const opened = ctx.events.find((e) => e.name === 'ha/circuit-opened')
+  assert.equal(opened.payload.key, 'p0\u0000m0')
+  assert.equal(opened.payload.level, 'model')
+  const failover = ctx.events.find((e) => e.name === 'ha/failover')
+  assert.equal(failover.payload.from, 'p0/m0')
+  assert.equal(failover.payload.to, 'p1/m1')
+  assert.equal(failover.payload.code, 'RATE_LIMIT')
+})
+
+test('Phase1 不可重试错误：直接隔离并切换，不消耗阈值计数', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  const action = await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'INVALID_CREDENTIAL' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+  assert.deepEqual(action, { kind: 'retry' })
+
+  const out = await ctx.waterfall('agent/request', { turn: 2, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  assert.equal(out.provider, 'p1', '不可重试错误后直接切备用')
+  // 失败计数不累计（不消耗阈值）
+  const status = await rpc.haStatus()
+  assert.equal(status.failures.length, 0, '不可重试错误不写失败计数')
+})
+
+test('Phase1 CONTEXT_WINDOW_EXCEEDED 降级：去掉 reasoningEffort 重试原模型', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], degradeContextWindow: true } } })
+
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  const action = await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'CONTEXT_WINDOW_EXCEEDED' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+  assert.deepEqual(action, { kind: 'retry' })
+
+  // 降级后的请求：去掉 reasoningEffort，仍走原模型
+  const out = await ctx.waterfall('agent/request', { turn: 2, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0', reasoningEffort: 'high' }))
+  assert.equal(out.provider, 'p0')
+  assert.equal(out.model, 'm0')
+  assert.equal(out.reasoningEffort, undefined, '降级请求去掉 reasoningEffort')
+})
+
+test('Phase1 provider 级熔断：模型阈值触发后整个 provider 不可用', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { ha: { backups: [
+    { label: 'p0m9', provider: 'p0', model: 'm9' },
+    { label: 'p1m1', provider: 'p1', model: 'm1' },
+  ], providerThreshold: 1 } } })
+
+  // p0/m0 失败 -> 模型级隔离 + provider 级熔断（threshold=1）
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'SERVER' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+
+  const status = await rpc.haStatus()
+  const providerCircuit = status.quarantine.find((q) => q.model === '*' && q.provider === 'p0')
+  assert.ok(providerCircuit, 'provider 通配键已隔离')
+  assert.equal(providerCircuit.level, 'provider')
+  assert.equal(providerCircuit.code, 'PROVIDER_CIRCUIT')
+
+  // 请求 p0 的任何模型都被拦截，且备用跳过 p0 下的 m9，选 p1/m1
+  const out = await ctx.waterfall('agent/request', { turn: 2, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  assert.equal(out.provider, 'p1')
+  assert.equal(out.model, 'm1')
+})
+
+test('Phase1 探测恢复：冷却到期探测通过 -> 解除隔离（circuit-closed）', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], cooldownMs: 1000, probeEnabled: true } } })
+
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+  assert.equal((await rpc.haStatus()).quarantine.length, 1)
+
+  // 等冷却（1000ms）到期后自动探测
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+  const status = await rpc.haStatus()
+  assert.equal(status.quarantine.length, 0, '探测通过后隔离解除')
+  const closed = ctx.events.find((e) => e.name === 'ha/circuit-closed')
+  assert.ok(closed, '发出 ha/circuit-closed')
+  assert.equal(closed.payload.reason, 'probe')
+  const probeEv = ctx.events.find((e) => e.name === 'ha/probe')
+  assert.ok(probeEv && probeEv.payload.ok === true, '发出 ha/probe(ok)')
+})
+
+test('Phase1 探测失败：隔离延长并记录失败（probeLog）', async () => {
+  const { ctx, fakeAgent, state } = makeEnv()
+  state.probeMode = 'fail'
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'SERVER' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+
+  // 手动探测两次均失败
+  const r1 = await rpc.haProbeNow({ provider: 'p0', model: 'm0' })
+  assert.equal(r1.ok, false)
+  const r2 = await rpc.haProbeNow({ provider: 'p0', model: 'm0' })
+  assert.equal(r2.ok, false)
+
+  const status = await rpc.haStatus()
+  assert.ok(status.quarantine.length >= 1, '探测失败后仍隔离')
+  const fails = status.probes.last.filter((p) => !p.ok && p.key === 'p0\u0000m0')
+  assert.ok(fails.length >= 2, 'probeLog 记录失败')
+})
+
+test('Phase1 /ha 命令：注册与 status/reset/probe', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  // 命令注册（懒注册走 timer 重试，等待就绪）
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  const def = ctx.commandDefs.find((d) => d.name === 'ha')
+  assert.ok(def, '/ha 命令已注册')
+  assert.equal(typeof def.handler, 'function')
+
+  // status
+  const res = await def.handler({ input: 'status' })
+  assert.equal(res.kind, 'success')
+  assert.ok(res.text.indexOf('HA 状态') >= 0 || res.text.indexOf('HA status') >= 0)
+
+  // 制造一次隔离后 status 可见
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+  const statusText = await def.handler({ input: 'status' })
+  assert.ok(statusText.text.indexOf('p0/m0') >= 0, 'status 显示隔离键')
+
+  // reset
+  const resetRes = await def.handler({ input: 'reset' })
+  assert.equal(resetRes.kind, 'success')
+  const after = await rpc.haStatus()
+  assert.equal(after.quarantine.length, 0)
+
+  // probe 用法错误
+  const bad = await def.handler({ input: 'probe' })
+  assert.equal(bad.kind, 'error')
+})
+
+test('Phase1 HA 运行态持久化：重启恢复隔离/游标/历史', async () => {
+  const fs = makeFs()
+  const envA = envWithSharedFs(fs)
+  const { fakeAgent } = envA
+  await mountPlugin(envA.ctx)
+  const rpcA = envA.ctx.get('haOrchestrator')
+
+  await rpcA.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await envA.ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  await envA.ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'RATE_LIMIT' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+  await envA.ctx.waterfall('agent/request', { turn: 2, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+
+  // 等防抖写盘
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const haFile = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.ha.json') >= 0)
+  assert.ok(haFile, 'HA 运行态文件已写入: ' + [...fs.store.keys()].join(','))
+  const parsed = JSON.parse(fs.store.get(haFile))
+  assert.equal(parsed.version, 1)
+  assert.ok(parsed.quarantine.length >= 1)
+  assert.ok(parsed.history.length >= 1)
+
+  // 新实例（重启）恢复
+  const envB = envWithSharedFs(fs)
+  await mountPlugin(envB.ctx)
+  const statusB = await envB.ctx.get('haOrchestrator').haStatus()
+  assert.equal(statusB.quarantine.length, 1)
+  assert.equal(statusB.quarantine[0].provider, 'p0')
+  assert.equal(statusB.quarantine[0].model, 'm0')
+  assert.ok(statusB.history.some((h) => h.to === 'p1/m1'), '切换历史恢复')
+  assert.ok(statusB.cursors.some((c) => c.agent === 'a1' && c.lastKey === 'p1\u0000m1'), '游标恢复')
+})
+
+test('Phase1 haSuggestBackups：排除当前默认模型，给出候选', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  const cands = await rpc.haSuggestBackups()
+  // 默认选择 p0/m0 -> 排除整个 p0，候选为 p1/m0、p1/m1
+  assert.ok(cands.length >= 2, '有候选: ' + JSON.stringify(cands))
+  assert.ok(cands.every((c) => c.provider === 'p1'), '排除默认 provider')
+  assert.ok(cands.some((c) => c.model === 'm1'))
+})
+
+test('Phase1 haStatus：隔离层级 / 失败计数 / 游标 / 探测记录齐备', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], threshold: 3, burstWindowMs: 60000 } } })
+
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  // 阈值 3：两次失败只累计不隔离
+  await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'SERVER' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+  await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'SERVER' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+
+  const status = await rpc.haStatus()
+  assert.equal(status.config.threshold, 3)
+  assert.equal(status.config.burstWindowMs, 60000)
+  assert.equal(status.failures.length, 1)
+  assert.equal(status.failures[0].count, 2)
+  assert.equal(status.quarantine.length, 0, '阈值内不隔离')
+  assert.equal(status.cursors.length, 1)
+  assert.equal(status.cursors[0].retries, 2)
+  assert.ok(Array.isArray(status.probes.last))
 })

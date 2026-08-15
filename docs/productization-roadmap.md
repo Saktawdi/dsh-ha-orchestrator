@@ -2,7 +2,7 @@
 
 > 版本：草案 v1.0
 > 范围：基于 2026-08 GitHub / npm 生态调研，为 ha-orchestrator 从“个人可用插件”升级为“优秀产品化 DSH 插件”给出路线图。
-> 当前基线：v0.3.0（2026-08-15）。静态 Cordis 插件；源码 TypeScript（`src/`：index + 5 个纯逻辑模块 + types 服务契约），`lib/` 为 tsc 构建产物（含 `.d.ts`）；114 个纯逻辑单测 + 15 个集成测试（假 ctx 驱动真实插件）+ `scripts/verify.mjs` 离线冒烟（6 组）+ GitHub Actions（Linux/Windows，typecheck/build/test/verify 全链路）；`dsh plugin add "file:<repo>"` 可安装；尚未发布 npm。
+> 当前基线：v0.4.0（2026-08-15）。静态 Cordis 插件；源码 TypeScript（`src/`：index + 5 个纯逻辑模块 + types 服务契约），`lib/` 为 tsc 构建产物（含 `.d.ts`）；145 测试（120 单测 + 25 集成）+ `scripts/verify.mjs` 离线冒烟（6 组）+ GitHub Actions（Linux/Windows，typecheck/build/test/verify 全链路）；HA 运行态持久化、两层熔断、滑动窗口、探测恢复、错误分类、类型化事件、`/ha` 命令已落地；`dsh plugin add "file:<repo>"` 可安装；尚未发布 npm。
 
 ---
 
@@ -77,8 +77,8 @@
 | 技术栈 | TypeScript 七模块（src/，strict）+ tsc 构建（lib/ + .d.ts） | TypeScript 模块化、官方 client 基建 | client 仍手写 JS，待 Phase 3 迁移官方 UI 基建；服务键已物化（ctx.haOrchestrator） |
 | 测试 | 129（114 单测 + 15 集成：假 ctx 驱动真实插件的 HA 事件流 / 编排 execute / 配置持久化恢复） | 核心逻辑单测 + 离线冒烟 + e2e | 真实 dsh 环境的 live e2e 待补（部署验证） |
 | CI | GitHub Actions：Linux + Windows（typecheck / build / check / test / verify，Node 22） | typecheck / test / build / verify 全绿 | 无兼容矩阵 job |
-| 状态持久化 | 配置 JSON（`ha-orchestrator.config.json` + `.backup.json`，多目录降级 + 重试加载）；HA 运行态内存 | HA 熔断/冷却/历史可持久化 + run 持久化 | HA/run 运行态进程重启丢失 |
-| 可观测性 | debug 日志（内存环形 500 条）+ 设置页状态卡 + 注入状态徽章 | 会话事件、`/ha` 命令、活动面板、状态快照 | 缺事件、缺命令、UI 弱 |
+| 状态持久化 | 配置 JSON（`ha-orchestrator.config.json` + `.backup.json`）+ HA 运行态（`ha-orchestrator.ha.json`，防抖写盘 + 重启恢复） | HA 熔断/冷却/历史可持久化 + run 持久化 | run 运行态进程重启丢失（Phase 2） |
+| 可观测性 | debug 日志（内存环形 500 条）+ 设置页状态卡 + 注入状态徽章 + 类型化会话事件（ha/*）+ `/ha status` 命令 | 会话事件、`/ha` 命令、活动面板、状态快照 | 缺 Run 面板与实时进度（Phase 2/3） |
 | 配置 | 自有 JSON 文件 + 自绘五卡片 UI | DSH settings/storageDomain + 官方 Settings 卡片 | 存储/UI 都需迁移 |
 | 兼容性 | 已有 peerDependencies（caret 范围），无兼容矩阵 | 校准 peerDependencies、记录已验证 DSH 快照 | 缺验证记录与兼容策略 |
 | 文档 | README 双语 + docs 3 篇（评分/设计参考/路线图） | README + docs + 升级指南 + 安全说明 | 缺维护文档 |
@@ -170,26 +170,27 @@ ha-orchestrator/
 - [x] `pnpm typecheck` / `pnpm build`（npm 脚本等价物）已补入同一门禁。
 - 已知问题修复（v0.2.1 / v0.2.2 已全部落地，见 CHANGELOG）。
 
-### Phase 1：HA 能力补强（建议 2–3 周）
+### Phase 1：HA 能力补强（建议 2–3 周，已完成 100%）
 
 目标：在“模型故障恢复”这个锚点上做到生态最可靠。
 
-- [ ] **持久化 HA 状态**：隔离、失败计数、冷却、当前轮换游标写入 `storageDomain` / settings，重启后恢复（当前仅配置持久化，运行态为内存）。
-- [ ] **熔断升级**：
-  - 支持“模型级 + Provider 级”两层熔断；
-  - 支持 `burstWindowMs` 滑动窗口；
-  - 冷却到期后**真实探测恢复**（小成本调用），而不是被动等下一次请求踩雷。
-- [ ] **错误分类策略**：
-  - 可重试错误（限流/超时/5xx/配额）与不可重试错误（鉴权/上下文超长）分开；
-  - 对 `CONTEXT_WINDOW_EXCEEDED` 提供可选降级（例如去掉 reasoningEffort、压缩历史或切大上下文模型）。
-- [ ] **切换可观测**：
-  - 发出类型化 session 事件 `ha/failover`、`ha/circuit-opened`、`ha/circuit-closed`、`ha/probe`；
-  - 提供 `/ha status` 命令查看当前熔断/冷却/历史。
-- [ ] **配置向导**：
-  - 设置页提供“推荐备份”按钮：从已注册 provider/model 目录自动挑选候选（“从配置添加”手动下拉已实现）；
-  - 空状态引导，避免用户不知道要配 backups。
+- [x] **持久化 HA 状态**：隔离、失败计数、冷却、当前轮换游标、切换历史防抖写入 `ha-orchestrator.ha.json`（与配置文件同目录、同降级顺序），启动/重试/懒加载路径均恢复并继续冷却计时（v0.4.0）。
+- [x] **熔断升级**：
+  - 支持“模型级 + Provider 级”两层熔断：`providerThreshold` 个模型被隔离后熔断整个 provider（通配键），备用挑选跳过被熔断 provider（`findFallback` 检查通配键）；
+  - 支持 `burstWindowMs` 滑动窗口：窗口内首次失败记入 `windowStart`，滑出窗口计数重置；
+  - 冷却到期后**真实探测恢复**（小成本 `maxTokens=1` 调用）：成功解除隔离（`ha/circuit-closed`），失败延长冷却并重试（60s–5min）；provider 通配键到期即解除；`/ha probe` 与 RPC `haProbeNow` 支持手动探测。
+- [x] **错误分类策略**：
+  - 不可重试错误（`INVALID_CREDENTIAL`/`AUTH`/`UNAUTHORIZED`/`NO_ADAPTER`）直接隔离切换、不消耗阈值计数；
+  - `CONTEXT_WINDOW_EXCEEDED` 提供可选降级（`degradeContextWindow`：去掉 reasoningEffort 重试原模型）。
+- [x] **切换可观测**：
+  - 类型化会话事件：`ha/failover`、`ha/circuit-opened`、`ha/circuit-closed`、`ha/probe`、`ha/state-restored`；
+  - `/ha status` 命令（status / reset / probe）+ RPC `haStatus`（隔离层级/失败计数/游标/探测记录）。
+- [x] **配置向导**：
+  - RPC `haSuggestBackups` 从已注册 provider×模型目录自动挑选候选（排除当前默认选择）；
+  - 设置页「推荐备份」按钮一键追加（空状态引导文案）；“从配置添加”手动下拉保留。
 - [ ] **与 `llm-retry` 协作**：
-  - 明确 retry 与 failover 的层级：先让官方重试处理瞬时抖动，逃逸的失败再进熔断/回退（参考 `dsh-model-failover`）。
+  - 层级已明确并实现：本插件监听器 `prepend: true` 位于瀑布流最外层——阈值内抖动由本插件带退避重试；预算耗尽 `next()` 放行给官方 `llm-retry`；逃逸失败再进熔断/回退。
+  - 待补：README/文档中写出该层级说明与组合配置建议（随 Phase 4 文档体系落地）。
 
 ### Phase 2：编排能力产品化（建议 3–4 周）
 
@@ -296,9 +297,9 @@ ha-orchestrator/
 
 ## 8. 推荐立即执行的三件事
 
-1. **补 npm 发布准备**：`publishConfig.access`、`engines`、兼容矩阵验证记录，并完成首次 GitHub Release（附 `.tgz`）——安装/分发是当前评分最低的维度，也是“产品化”的第一张门票。
-2. **补 HA 运行态持久化 + 类型化事件（Phase 1）**：把隔离/失败计数/冷却/轮换游标落盘，重启可恢复；提供 `/ha status` 诊断命令——这是 HA 维度从 4.0 走向 4.5+ 的关键。
-3. **补 run 持久化与对话内 Run 卡片（Phase 2/3）**：`orchestrate` 生成 `runId` 并落盘子任务状态/输出，把纯文本结果升级为可观察、可恢复的会话内卡片——这是用户感知最直接的提升。
+1. **补 npm 发布准备**：`publishConfig.access`、`engines` 已落地；兼容矩阵验证记录 + 首次 GitHub Release（附 `.tgz`）待补（Phase 4）——安装/分发仍是评分最低的维度，也是“产品化”的第一张门票。
+2. **HA 运行态持久化 + 类型化事件（Phase 1）**：✅ 已落地（v0.4.0）——隔离/失败计数/冷却/轮换游标落盘、重启可恢复、探测恢复、`/ha status`、`ha/failover` 等事件。
+3. **补 run 持久化与对话内 Run 卡片（Phase 2/3）**：`orchestrate` 生成 `runId` 并落盘子任务状态/输出，把纯文本结果升级为可观察、可恢复的会话内卡片——这是用户感知最直接的提升（下一步）。
 
 ---
 

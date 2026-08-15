@@ -18,6 +18,9 @@ import {
   maxRetriesFor,
   computeFailingKey,
   createHaState,
+  countQuarantinedModels,
+  serializeHaState,
+  deserializeHaState,
 } from '../lib/ha-core.js'
 
 const mkCfg = (overrides = {}) => ({
@@ -110,7 +113,7 @@ test('quarantineKey writes quarantine and drops failures for the key', () => {
   assert.equal(state.failures.get(k).count, 1)
 
   quarantineKey(state, cfg, k, '429', 5000)
-  assert.deepEqual(state.quarantine.get(k), { until: 35000, code: '429' })
+  assert.deepEqual(state.quarantine.get(k), { until: 35000, code: '429', level: 'model' })
   assert.equal(state.failures.has(k), false)
 })
 
@@ -298,4 +301,111 @@ test('hasFallback only checks availability, no cursor change', () => {
 
   state.quarantine.set(keyOf('openai', 'gpt-4'), { until: 999999, code: '500' })
   assert.equal(hasFallback(state, cfg, [], 'a1', null, 1000), false)
+})
+
+// ===================== Phase 1：滑动窗口 / 双层熔断 / 序列化 =====================
+
+test('burstWindowMs: 窗口内计数，窗口滑动后重置', () => {
+  const cfg = mkCfg({ burstWindowMs: 60000 })
+  const state = createHaState()
+  const k = keyOf('p0', 'm0')
+
+  // 窗口内两次失败 -> 计数 2
+  assert.equal(bumpFailure(state, cfg, k, 1000), 1)
+  assert.equal(bumpFailure(state, cfg, k, 30000), 2)
+  assert.equal(state.failures.get(k).count, 2)
+
+  // 窗口滑出（now - windowStart > 60000）-> 重置为 1
+  assert.equal(bumpFailure(state, cfg, k, 62000), 1)
+  assert.equal(state.failures.get(k).count, 1)
+
+  // burstWindowMs = 0（关闭）-> 计数持续累积直到冷却到期
+  const cfg2 = mkCfg({ burstWindowMs: 0, cooldownMs: 300000 })
+  const s2 = createHaState()
+  assert.equal(bumpFailure(s2, cfg2, k, 1000), 1)
+  assert.equal(bumpFailure(s2, cfg2, k, 70000), 2)
+  assert.equal(s2.failures.get(k).count, 2)
+})
+
+test('quarantineKey: provider 级隔离写通配键并标注 level', () => {
+  const state = createHaState()
+  const cfg = mkCfg({ cooldownMs: 30000 })
+  const k = keyOf('p0', '*')
+  quarantineKey(state, cfg, k, 'PROVIDER_CIRCUIT', 5000, 'provider')
+  assert.deepEqual(state.quarantine.get(k), { until: 35000, code: 'PROVIDER_CIRCUIT', level: 'provider' })
+})
+
+test('countQuarantinedModels: 只统计模型级隔离，不含通配键', () => {
+  const state = createHaState()
+  const cfg = mkCfg({ cooldownMs: 30000 })
+  quarantineKey(state, cfg, keyOf('p0', 'm1'), '500', 1000)
+  quarantineKey(state, cfg, keyOf('p0', 'm2'), '500', 1000)
+  quarantineKey(state, cfg, keyOf('p0', '*'), 'PROVIDER_CIRCUIT', 1000, 'provider')
+  quarantineKey(state, cfg, keyOf('p1', 'm9'), '500', 1000)
+  assert.equal(countQuarantinedModels(state, 'p0', 2000), 2)
+  assert.equal(countQuarantinedModels(state, 'p1', 2000), 1)
+  assert.equal(countQuarantinedModels(state, 'p2', 2000), 0)
+})
+
+test('findFallback: provider 通配键隔离时跳过该 provider 全部模型', () => {
+  const cfg = mkCfg({ backups: [
+    { provider: 'p0', model: 'm1' },
+    { provider: 'p1', model: 'm1' },
+  ] })
+  const state = createHaState()
+  state.quarantine.set(keyOf('p0', '*'), { until: 999999, code: 'PROVIDER_CIRCUIT', level: 'provider' })
+  const picked = findFallback(state, cfg, [], 'a1', null, 1000)
+  assert.equal(picked.provider, 'p1')
+  assert.equal(picked.model, 'm1')
+})
+
+test('serialize/deserializeHaState: 往返一致，畸形输入返回 null', () => {
+  const cfg = mkCfg({ cooldownMs: 30000 })
+  const state = createHaState()
+  bumpFailure(state, cfg, keyOf('p0', 'm0'), 1000)
+  quarantineKey(state, cfg, keyOf('p0', 'm1'), '429', 2000)
+  quarantineKey(state, cfg, keyOf('p0', '*'), 'PROVIDER_CIRCUIT', 2000, 'provider')
+  setEntry(state, 'a1', { index: 1, lastKey: keyOf('p0', 'm1'), retries: 2, failCode: '429', steeredTurn: 3, degradeReasoning: true })
+  recordHistory(state, 'a1', keyOf('p0', 'm0'), { provider: 'p1', model: 'm1' }, '429', 3000)
+
+  const json = serializeHaState(state)
+  const restored = deserializeHaState(JSON.stringify(json))
+  assert.ok(restored, 'deserialize ok')
+  assert.equal(restored.quarantine.size, 2)
+  assert.equal(restored.quarantine.get(keyOf('p0', 'm1')).code, '429')
+  assert.equal(restored.quarantine.get(keyOf('p0', 'm1')).level, 'model')
+  assert.equal(restored.quarantine.get(keyOf('p0', '*')).level, 'provider')
+  assert.equal(restored.failures.get(keyOf('p0', 'm0')).count, 1)
+  assert.deepEqual(restored.perAgent.get('a1'), { index: 1, lastKey: keyOf('p0', 'm1'), retries: 2, failCode: '429', steeredTurn: 3, degradeReasoning: true })
+  assert.equal(restored.history.length, 1)
+
+  // 畸形输入
+  assert.equal(deserializeHaState(null), null)
+  assert.equal(deserializeHaState('not json'), null)
+  assert.equal(deserializeHaState('[]'), null)
+  // 畸形节被宽容跳过，返回空状态（部分损坏仍能还原有效部分）
+  const lenient = deserializeHaState('{"quarantine": "x"}')
+  assert.ok(lenient && lenient.quarantine.size === 0, '畸形节被忽略，返回空状态')
+  // 空对象 -> 空状态
+  const empty = deserializeHaState('{}')
+  assert.ok(empty)
+  assert.equal(empty.quarantine.size, 0)
+  // 非法条目被跳过
+  const partial = deserializeHaState('{"quarantine": [["k1", {"until": "bad"}]], "failures": [["k2", {"count": 1, "until": 100}]]}')
+  assert.ok(partial)
+  assert.equal(partial.quarantine.size, 0)
+  assert.equal(partial.failures.size, 1)
+})
+
+test('deserializeHaState: 还原后过期条目可被 clearExpired 清理', () => {
+  const state = deserializeHaState(JSON.stringify({
+    version: 1,
+    quarantine: [['p0\u0000m0', { until: 1000, code: '429' }]],
+    failures: [['p0\u0000m1', { count: 2, until: 999 }]],
+    perAgent: [],
+    history: [],
+  }))
+  clearExpired(state, 5000)
+  assert.equal(state.quarantine.size, 0)
+  assert.equal(state.failures.size, 0)
 })

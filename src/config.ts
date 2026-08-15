@@ -39,6 +39,14 @@ export interface HaConfig {
   codes: string[]
   persistSelection: boolean
   steerOnStop: boolean
+  /** 失败计数滑动窗口（毫秒）；0 = 关闭（计数到冷却到期才过期）。 */
+  burstWindowMs: number
+  /** Provider 级熔断阈值：同一 provider 隔离的模型数达到该值后熔断整个 provider；0 = 关闭。 */
+  providerThreshold: number
+  /** 冷却到期后真实探测恢复（小成本调用验证模型可用）。 */
+  probeEnabled: boolean
+  /** CONTEXT_WINDOW_EXCEEDED 时降级重试（去掉 reasoningEffort）。 */
+  degradeContextWindow: boolean
 }
 
 /** 编排配置节。 */
@@ -90,6 +98,14 @@ export const defaultConfig: Config = {
     codes: [],
     persistSelection: false,
     steerOnStop: true,
+    // 突发窗口 60s：60s 内多次失败才计入阈值，避免偶发抖动触发熔断
+    burstWindowMs: 60000,
+    // 同一 provider 隔离 2 个模型后熔断整个 provider（0 = 关闭）
+    providerThreshold: 2,
+    // 冷却到期后用最小成本调用探测恢复
+    probeEnabled: true,
+    // 上下文超长降级默认关闭（可选）
+    degradeContextWindow: false,
   },
   orch: {
     enabled: true,
@@ -156,6 +172,10 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
       ha.threshold = Math.max(1, Number(ha.threshold) || 1)
       ha.persistSelection = asBool(ha.persistSelection)
       ha.steerOnStop = asBool(ha.steerOnStop)
+      ha.burstWindowMs = Math.max(0, Number(ha.burstWindowMs) || 0)
+      ha.providerThreshold = Math.max(0, Number(ha.providerThreshold) || 0)
+      ha.probeEnabled = asBool(ha.probeEnabled)
+      ha.degradeContextWindow = asBool(ha.degradeContextWindow)
       ha.codes = Array.isArray(ha.codes) ? ha.codes.map(String).filter(Boolean) : []
       ha.backups = Array.isArray(ha.backups)
         ? ha.backups.filter((b: BackupEntry | RawSection) => !!b && typeof b === 'object')

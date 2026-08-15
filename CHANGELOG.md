@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] - 2026-08-15
+
+### Added
+- 路线图 Phase 1（HA 能力补强）全部落地：
+  - **HA 运行态持久化**：隔离/失败计数/轮换游标/切换历史防抖写入 `ha-orchestrator.ha.json`（与配置同目录），重启自动恢复并继续冷却计时；
+  - **两层熔断**：模型级（现有）+ provider 级（`providerThreshold`：同一 provider 隔离 N 个模型后熔断整个 provider，备用挑选跳过该 provider）；`burstWindowMs` 滑动窗口，窗口内多次失败才计入阈值；
+  - **真实探测恢复**：冷却到期后以小成本调用（maxTokens=1）探测隔离模型，成功即解除隔离（`ha/circuit-closed`），失败延长冷却并重试（间隔 60s–5min）；provider 通配键到期即解除；
+  - **错误分类**：不可重试错误（`INVALID_CREDENTIAL`/`AUTH`/`UNAUTHORIZED`/`NO_ADAPTER`）直接隔离切换、不消耗阈值计数；`CONTEXT_WINDOW_EXCEEDED` 可选降级（`degradeContextWindow`：去掉 reasoningEffort 重试原模型）；
+  - **类型化会话事件**：`ha/failover`、`ha/circuit-opened`、`ha/circuit-closed`、`ha/probe`、`ha/state-restored`；
+  - **`/ha` 命令**：`/ha status` / `/ha reset` / `/ha probe <provider> <model>`（commands 服务懒注册，缺失不阻塞插件）；
+  - **新 RPC**：`haStatus`（隔离层级/失败计数/游标/探测记录）、`haProbeNow`（手动探测，无视冷却直接验证）、`haSuggestBackups`（推荐备份候选，供配置向导）；
+  - 设置页 HA 卡片新增 4 项配置（滑动窗口/Provider 熔断阈值/探测恢复/上下文降级）+「推荐备份」按钮。
+
+### Fixed
+- `countQuarantinedModels` 前缀计算不再误用 `keyOf(provider, '')`（空 model 会回退通配符，导致 provider 级熔断永远不触发）。
+
 ## [0.3.0] - 2026-08-15
 
 ### Added

@@ -1,12 +1,16 @@
-/** 隔离条目：到期时间 + 触发错误码。 */
+/** 隔离条目：到期时间 + 触发错误码 + 熔断层级。 */
 export interface QuarantineEntry {
     until: number;
     code?: string;
+    /** 'model' = 模型级熔断；'provider' = provider 级熔断（通配键）。 */
+    level?: 'model' | 'provider';
 }
-/** 失败计数条目：累计次数 + 计数过期时间。 */
+/** 失败计数条目：累计次数 + 计数过期时间 + 滑动窗口起点。 */
 export interface FailureEntry {
     count: number;
     until: number;
+    /** burstWindowMs 滑动窗口内的首次失败时间（0 = 未启用窗口）。 */
+    windowStart?: number;
 }
 /** per-agent 游标条目。 */
 export interface PerAgentEntry {
@@ -15,6 +19,8 @@ export interface PerAgentEntry {
     retries?: number;
     failCode?: string;
     steeredTurn?: number;
+    /** CONTEXT_WINDOW_EXCEEDED 降级标记：下一次请求去掉 reasoningEffort。 */
+    degradeReasoning?: boolean;
 }
 /** 切换历史条目。 */
 export interface HistoryEntry {
@@ -35,6 +41,8 @@ export interface HaState {
 export interface HaCfgLike {
     cooldownMs: number;
     threshold: number;
+    /** 失败计数滑动窗口（毫秒）；0 = 关闭（计数到冷却到期） */
+    burstWindowMs?: number;
     backups?: Array<{
         provider?: string;
         model?: string;
@@ -90,12 +98,17 @@ export declare function setEntry(state: HaState, agentId: string, patch: Partial
 /**
  * Record one failure for a key, then start/fresh its cooldown. Returns the new
  * running count for that key.
+ *
+ * 滑动窗口语义：配置 burstWindowMs > 0 时，窗口内的首次失败时间记入
+ * `windowStart`；当 now - windowStart 超出窗口时计数重置为 1（旧失败不再
+ * 计入），实现“短时间突发多次失败才触发阈值”的突发窗口。
  */
 export declare function bumpFailure(state: HaState, haCfg: HaCfgLike, k: string, now?: number): number;
 /**
  * Quarantine a key for the cooldown window and drop any pending failures for it.
+ * @param level 熔断层级：'model'（默认）或 'provider'（通配键）。
  */
-export declare function quarantineKey(state: HaState, haCfg: HaCfgLike, k: string, code?: string, now?: number): void;
+export declare function quarantineKey(state: HaState, haCfg: HaCfgLike, k: string, code?: string, now?: number, level?: 'model' | 'provider'): void;
 /**
  * Append a switch history entry (trimmed to the newest 50 entries).
  */
@@ -137,3 +150,31 @@ export declare function computeFailingKey(entry: PerAgentEntry | undefined, prov
  * Fresh, empty HA state container.
  */
 export declare function createHaState(): HaState;
+/**
+ * 统计某个 provider 下已隔离的模型数（不含 provider 通配键本身）。
+ * 供 provider 级熔断阈值判断使用。
+ */
+export declare function countQuarantinedModels(state: HaState, provider: string, now?: number): number;
+/** 磁盘上 HA 运行态文件的结构（version 1）。 */
+export interface HaStateJson {
+    version: 1;
+    quarantine: Array<[string, {
+        until: number;
+        code?: string;
+        level?: 'model' | 'provider';
+    }]>;
+    failures: Array<[string, {
+        count: number;
+        until: number;
+        windowStart?: number;
+    }]>;
+    perAgent: Array<[string, PerAgentEntry]>;
+    history: HistoryEntry[];
+}
+/** 把 HA 运行态序列化为可持久化 JSON 对象。 */
+export declare function serializeHaState(state: HaState): HaStateJson;
+/**
+ * 从 JSON 文本还原 HA 运行态；畸形/非法输入返回 null（调用方忽略并全新开始）。
+ * 还原后各条目的过期清理由调用方在首次使用前 clearExpired。
+ */
+export declare function deserializeHaState(text: string | null | undefined): HaState | null;

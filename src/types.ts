@@ -20,10 +20,30 @@ export interface TimerService {
   timeout(ms: number): Promise<unknown>
 }
 
-/** llm 服务最小形状（listProviders / listModels）。 */
+/** llm 服务最小形状（listProviders / listModels / 探测用的 stream）。 */
 export interface LlmService {
   listProviders(): Array<{ id?: string; provider?: string; name?: string } | string>
   listModels(provider: string): Promise<Array<{ provider?: string; id?: string; model?: string; name?: string } | string>>
+  /** 独立查询（探测恢复用小成本调用）。 */
+  stream?(options: Record<string, unknown>): AsyncIterable<unknown>
+  /** 预解析调用（可选；存在时探测优先走 prepareCall + preparedCall.stream）。 */
+  prepareCall?(config: Record<string, unknown>, signal?: AbortSignal): Promise<{ stream(options: Record<string, unknown>): AsyncIterable<unknown> }>
+}
+
+/** 人类命令调用载荷（dsh-commands 最小形状）。 */
+export interface CommandInvocationLike {
+  /** 命令名后的原始输入文本。 */
+  input?: string
+}
+
+/** 命令服务（dsh-commands 最小形状）。 */
+export interface CommandsService {
+  register(def: {
+    name: string
+    description: string
+    input?: { hint?: string }
+    handler: (invocation: CommandInvocationLike) => unknown
+  }): () => void
 }
 
 /** 子智能体运行请求（提供方 contract）。 */

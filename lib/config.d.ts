@@ -24,6 +24,14 @@ export interface HaConfig {
     codes: string[];
     persistSelection: boolean;
     steerOnStop: boolean;
+    /** 失败计数滑动窗口（毫秒）；0 = 关闭（计数到冷却到期才过期）。 */
+    burstWindowMs: number;
+    /** Provider 级熔断阈值：同一 provider 隔离的模型数达到该值后熔断整个 provider；0 = 关闭。 */
+    providerThreshold: number;
+    /** 冷却到期后真实探测恢复（小成本调用验证模型可用）。 */
+    probeEnabled: boolean;
+    /** CONTEXT_WINDOW_EXCEEDED 时降级重试（去掉 reasoningEffort）。 */
+    degradeContextWindow: boolean;
 }
 /** 编排配置节。 */
 export interface OrchConfig {
