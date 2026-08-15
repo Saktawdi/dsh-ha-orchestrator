@@ -1158,3 +1158,43 @@ test('Phase2 /ha diag：服务可用性与持久化诊断', async () => {
   assert.ok(res.text.indexOf('subagents') >= 0, 'diag 列出服务名')
   assert.ok(res.text.indexOf('可用') >= 0 || res.text.indexOf('available') >= 0, 'diag 标注可用性')
 })
+
+// ===================== Phase 3：对话内 Run 卡片（宿主侧展示投影） =====================
+
+test('Phase3 Run 卡片：orchestrate 结果含 runId 且展示投影齐备', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 'rc1', prompt: 'a' }, { id: 'rc2', prompt: 'b' }],
+  }, { id: 'a1' })
+
+  // 结果值含 runId，与 run 记录一致
+  assert.ok(/^r-/.test(res.runId), '结果含 runId')
+  const { runs } = await rpc.orchRuns()
+  assert.equal(res.runId, runs[0].runId, 'runId 与记录一致')
+
+  // 工具定义带展示投影
+  const tool = findTool(ctx, 'orchestrate')
+  assert.equal(typeof tool.presentCall, 'function')
+  assert.equal(typeof tool.presentResult, 'function')
+  assert.equal(typeof tool.output.presentationMeta, 'function')
+
+  // presentCall：pending 标题含模式
+  const callView = tool.presentCall({ mode: 'supervisor', tasks: [{ id: 'x', prompt: 'p' }] })
+  assert.equal(callView.card, 'generic')
+  assert.ok(callView.title.indexOf('supervisor') >= 0)
+
+  // presentationMeta：结构化 run 元数据
+  const meta = tool.output.presentationMeta({}, { summary: 's', runId: 'r-abc', runs: [{ id: 'rc1', label: 'rc1', status: 'completed', output: 'o' }, { id: 'rc2', label: 'rc2', status: 'error', output: 'e' }] })
+  assert.equal(meta.runId, 'r-abc')
+  assert.equal(meta.runs.length, 2)
+  assert.equal(meta.runs[1].status, 'error')
+
+  // presentResult：标题含 runId（来自 meta）
+  const resultView = tool.presentResult({}, { content: [], isError: false, meta })
+  assert.equal(resultView.card, 'generic')
+  assert.ok(resultView.title.indexOf('r-abc') >= 0, '完成态标题含 runId')
+})

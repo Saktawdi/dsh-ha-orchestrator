@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.10.0] - 2026-08-15
+
+### Added
+- Phase 3 对话内 Run 卡片（官方展示投影 + keyed toolview 槽位）：
+  - 宿主侧：`orchestrate` 工具结果新增 `runId` 字段；`output.presentationMeta`（runId + 各子任务状态，随会话日志持久化、replay 可还原）、顶层 `presentCall`（pending 标题含模式）、`presentResult`（完成态标题含 runId）；
+  - 客户端：经官方 `tool.call.toolview` 槽位注册 `key: 'orchestrate'` 的 RunCard——运行中实时显示子任务数（`subCalls`），完成后显示 runId 标题、状态徽章与输出摘要。
+
 ## [0.9.0] - 2026-08-15
 
 ### Added

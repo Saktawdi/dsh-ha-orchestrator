@@ -230,8 +230,8 @@ ha-orchestrator/
   - 新增「诊断」折叠卡片：熔断/冷却/探测概览、隔离清单（含 level/剩余时间）、失败计数、游标、探测记录、最近 run，10s 轮询（v0.7.0）；
   - “一键导出/导入配置”已落地：`stateExport`/`stateImport` RPC + 系统卡片导出（复制）/导入（粘贴并应用）区域（v0.7.0）；
   - 卡片化风格与 DSH 原生对齐（CSS 变量 + 折叠）已部分完成；原生 settings 体系迁移待官方基建项。
-- [ ] **Run 面板**：
-  - 对话流中显示 `orchestrate` 调用卡片：runId、进度、各子任务状态、输出摘要（待官方 conversation view 基建）；
+- [x] **Run 面板**：
+  - 对话流中显示 `orchestrate` 调用卡片：官方展示投影（`presentationMeta`/`presentCall`/`presentResult`）+ `tool.call.toolview` keyed 槽位注册 RunCard——运行中实时子任务数、完成后 runId 标题 + 状态徽章 + 输出摘要（v0.10.0）；
   - 设置页「诊断」卡片已展示最近 run 列表（runId/mode/status）（v0.7.0）。
 - [ ] **可访问性与响应式**：键盘可操作、`prefers-reduced-motion`、窄屏可用（当前 CSS 变量 + 弹性布局已基本响应式；可访问性细化待排期）。
 - [x] **错误体验**：

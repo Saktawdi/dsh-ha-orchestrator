@@ -1141,6 +1141,7 @@ async function apply(ctx: Context): Promise<void> {
           additionalProperties: false,
           properties: {
             summary: { type: 'string' },
+            runId: { type: 'string' },
             runs: {
               type: 'array',
               items: {
@@ -1160,6 +1161,21 @@ async function apply(ctx: Context): Promise<void> {
         render(args: unknown, value: { summary?: string; runs?: Array<{ id?: string; label?: string; agent?: string; status?: string; output?: string }> } | null | undefined): ReturnType<typeof renderRunOutput> {
           return renderRunOutput(value)
         },
+        // 对话内 Run 卡片：结构化展示元数据（随会话日志持久化，replay 可还原）
+        presentationMeta(args, value) {
+          return {
+            runId: String((value && value.runId) || ''),
+            runs: (value && value.runs ? value.runs : []).map((r) => ({ id: r.id, label: r.label, status: r.status })),
+          }
+        },
+      },
+      // 顶层展示投影：pending 态标题 + 完成后标题（含 runId）
+      presentCall(args) {
+        return { card: 'generic', title: 'orchestrate (' + String(args.mode || 'fanout') + ')', kind: 'other' }
+      },
+      presentResult(args, result) {
+        const meta = (result && result.meta) as { runId?: string } | undefined
+        return { card: 'generic', title: 'orchestrate' + (meta && meta.runId ? ' · ' + meta.runId : '') }
       },
       async execute(args, exec) {
         const runId = newRunId()
@@ -1401,7 +1417,7 @@ async function apply(ctx: Context): Promise<void> {
             durationMs: rec.durationMs,
             at: rec.finishedAt,
           })
-          return { summary: rec.summary, runs: finalRuns }
+          return { summary: rec.summary, runs: finalRuns, runId }
         } catch (e) {
           debugLog('error', 'orch.error', 'orchestrate 执行失败', { message: String((e && (e as Error).message) || e) })
           // 失败也留痕（run 记录 + 事件），保证可观测
