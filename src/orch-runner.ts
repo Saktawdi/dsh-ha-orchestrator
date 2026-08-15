@@ -175,35 +175,50 @@ export function normalizeFinalRuns(runs: RunResultLike[]): RunResultLike[] {
 
 // 以并发上限 limit 执行 items，保持结果顺序；单任务异常被捕获为 error run，不中断其它任务。
 // 泛型 R 为 worker 的返回类型；异常时落入统一的 error run 结构（调用方按需消费）。
+// 可选 errorRun 允许调用方提供带上下文（如自定义 agent 名）的错误结果构造器。
 export async function poolRun<T, R>(
   items: T[],
   limit: number,
   worker: (item: T, index: number) => Promise<R>,
+  errorRun?: (item: T, error: unknown, index: number) => R,
 ): Promise<R[]> {
   const results = new Array<R>(items.length)
   let next = 0
+  let fatalError: unknown = null
   async function slot(): Promise<void> {
     while (next < items.length) {
+      if (fatalError) return
       const i = next
       next += 1
       const item = items[i]
       try {
         results[i] = await worker(item, i)
       } catch (e) {
-        // 显式声明不隔离的错误（如预算耗尽）直接抛出，中止整个执行
-        if (e && (e as { isolate?: boolean }).isolate === false) throw e
-        results[i] = {
-          id: String((item as Partial<TaskLike>).id || (item as Partial<TaskLike>).label || 'task'),
-          label: String((item as Partial<TaskLike>).label || ''),
-          agent: '',
-          status: 'error',
-          output: String((e && (e as Error).message) || e),
-        } as unknown as R
+        // 显式声明不隔离的错误（如预算耗尽）应中止整个执行；
+        // 先停止领取新任务，等已在途任务落定后带 partialRuns 抛出，保留已完成结果。
+        if (e && (e as { isolate?: boolean }).isolate === false) {
+          fatalError = e
+          return
+        }
+        results[i] = errorRun
+          ? errorRun(item, e, i)
+          : {
+              id: String((item as Partial<TaskLike>).id || (item as Partial<TaskLike>).label || 'task'),
+              label: String((item as Partial<TaskLike>).label || ''),
+              agent: '',
+              status: 'error',
+              output: String((e && (e as Error).message) || e),
+            } as unknown as R
       }
     }
   }
   const n = Math.max(1, Math.min(limit, items.length))
   await Promise.all(Array.from({ length: n }, () => slot()))
+  if (fatalError) {
+    const err = fatalError as Error & { partialRuns?: R[] }
+    err.partialRuns = results.filter((r): r is R => r !== undefined)
+    throw err
+  }
   return results
 }
 

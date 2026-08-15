@@ -92,6 +92,8 @@
     "diag.title":  "Diagnostics",
     "diag.yes":  "yes",
     "ha.addFromConfig":  "+ Add backup model (from config)",
+    "ha.advanced":  "Advanced",
+    "ha.advancedHint":  "Advanced settings; defaults are usually fine",
     "ha.backupList":  "Backup models (rotated in order; auto-recover after cooldown)",
     "ha.backupN":  "Backup {n}",
     "ha.burstWindow":  "Burst window (ms)",

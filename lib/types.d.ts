@@ -135,6 +135,10 @@ export interface LaunchEnvironmentService {
         value?: string;
     } | undefined;
 }
+/** typert registry 服务（仅用到 host 侧 invocation 注册）。 */
+export interface TypertRegistryService {
+    register(contribution: unknown): unknown;
+}
 /**
  * 从 ctx 读取服务（等价 ctx.get(name)，带 try/catch 与空值归一）。
  * 服务未就绪/未注册时返回 null，与旧版调用点语义一致。

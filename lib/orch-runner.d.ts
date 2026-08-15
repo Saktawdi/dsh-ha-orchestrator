@@ -75,7 +75,7 @@ export declare function buildRunPrompt(task: TaskLike, extra: string | null | un
 export declare function buildSubagentRequest(task: TaskLike, extra: string | null | undefined, agentDef: AgentDefLike | null | undefined, mergedPrefix: string, parent: unknown, signal: AbortSignal | null | undefined): SubagentRequestLike;
 export declare function normalizeRunResult(task: TaskLike, agentDef: AgentDefLike | null | undefined, res: SubagentResultLike): RunResultLike;
 export declare function normalizeFinalRuns(runs: RunResultLike[]): RunResultLike[];
-export declare function poolRun<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]>;
+export declare function poolRun<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>, errorRun?: (item: T, error: unknown, index: number) => R): Promise<R[]>;
 export declare function summarizeRuns(runs: RunResultLike[], t: TFunc, opts?: {
     bodyLimit?: number;
     totalLimit?: number;

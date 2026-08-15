@@ -92,6 +92,8 @@
     "diag.title":  "诊断",
     "diag.yes":  "是",
     "ha.addFromConfig":  "+ 添加备用模型（从配置读取）",
+    "ha.advanced":  "高级设置",
+    "ha.advancedHint":  "高级参数，通常保持默认值即可",
     "ha.backupList":  "备用模型（按序轮换，冷却后自动恢复）",
     "ha.backupN":  "备用 {n}",
     "ha.burstWindow":  "突发窗口（毫秒）",

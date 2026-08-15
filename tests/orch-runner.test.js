@@ -251,6 +251,21 @@ test('poolRun: 单任务异常被捕获为 error，不中断其它任务', async
   assert.deepEqual(results[0], { id: 1, ok: true })
   assert.deepEqual(results[1], { id: '2', label: '', agent: '', status: 'error', output: 'boom' })
 })
+test('poolRun: errorRun 回调可保留任务上下文（如 agent 名）', async () => {
+  const items = [{ id: 't1', agent: 'custom1' }, { id: 't2', agent: 'custom2' }]
+  const results = await poolRun(items, 4, async (item) => {
+    if (item.id === 't1') throw new Error('boom')
+    return { id: item.id, agent: item.agent, ok: true }
+  }, (item, e) => ({
+    id: String(item.id),
+    label: '',
+    agent: String(item.agent || ''),
+    status: 'error',
+    output: String((e && e.message) || e),
+  }))
+  assert.deepEqual(results[0], { id: 't1', label: '', agent: 'custom1', status: 'error', output: 'boom' })
+  assert.deepEqual(results[1], { id: 't2', agent: 'custom2', ok: true })
+})
 test('poolRun: limit 小于 1 时按 1 执行', async () => {
   let current = 0
   const items = [{ id: 1 }, { id: 2 }, { id: 3 }]

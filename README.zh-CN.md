@@ -109,7 +109,7 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 ## 用法
 
-无需特殊指令，模型自己决定何时编排：
+日常使用无需特殊指令，模型自己决定何时编排：
 
 ```
 你:    帮我调研这三个开源项目，比较许可证和社区活跃度，给出选型建议。
@@ -125,16 +125,34 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 模型:  自动调用 orchestrate（supervisor）→ 并行分析 → 评审合并 → 输出报告
 ```
 
+### 已注册命令
+
+插件还会注册两个可选的斜杠命令，用于查看和管理运行状态/记录：
+
+| 命令 | 说明 |
+| :-- | :-- |
+| `/ha` | 查看当前 HA 状态（等同 `/ha status`）。 |
+| `/ha status` | 查看隔离、失败计数、轮换游标、切换历史与探测记录。 |
+| `/ha diag` | 查看插件诊断：服务可用性、持久化、语言、注入状态。 |
+| `/ha reset` | 清空隔离、失败计数、游标与历史。 |
+| `/ha probe <provider> <model>` | 手动探测指定模型，验证恢复。 |
+| `/orchestrate` | 列出最近编排运行（等同 `/orchestrate runs`）。 |
+| `/orchestrate runs` | 列出最近 10 次编排运行。 |
+| `/orchestrate show <runId>` | 查看某次编排运行的详情。 |
+| `/orchestrate presets` | 列出已配置的编排配方。 |
+
+> 这些命令通过 DSH 的 `commands` 服务注册。如果部署环境没有该服务，插件仍可正常使用，只是这些斜杠命令不可用。
+
 ### 配置页
 
 设置 →「HA 与编排」：
 
 | 卡片 | 作用 |
 | :-- | :-- |
-| 模型高可用 | 开关、备用模型列表（含「推荐备份」）、冷却时间、失败阈值、突发窗口、Provider 熔断阈值、探测恢复、上下文超长降级、错误码过滤、隔离模型与切换历史 |
+| 模型高可用 | 开关、备用模型列表（含「推荐备份」）、「高级设置」：冷却时间、失败阈值、突发窗口、Provider 熔断阈值、探测恢复、上下文超长降级、错误码过滤、持久化选择、停止后引导 |
 | 子智能体编排 | 开关、子智能体提供方、默认并发数、单次任务子智能体上限、全局并发上限、流水线阶段重试 |
 | 自定义子智能体 | 增删改、排序；「智能新增」用 AI 生成 |
-| 诊断 | HA 运行态（隔离含层级/失败计数/游标/探测）与最近编排运行 |
+| 诊断 | HA 运行态（当前默认模型、隔离含层级/失败计数/游标/探测/切换历史、清除隔离与历史）与最近编排运行 |
 | 系统 | 插件语言（跟随系统 / 中文 / English）、编排引导开关、注入状态、一键导出/导入配置、调试卡片开关 |
 
 ## 文档
@@ -148,8 +166,8 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 ## 注意事项
 
 - 配置写入「当前会话 workspace / DSH_HOME、沙箱 workspace-write 可写根、fs 默认 cwd」中第一个可写位置（文件 `ha-orchestrator.config.json`，备份 `ha-orchestrator.config.backup.json`），启动时按相同顺序查找并恢复。
-- HA 运行态（隔离、失败计数、轮换游标、切换历史）防抖持久化到 `ha-orchestrator.ha.json`，重启自动恢复；编排运行记录写入 `ha-orchestrator.runs.jsonl`（见 `/orchestrate runs` / `/orchestrate show <runId>`）。
-- `/ha status` 查看熔断/计数/游标/探测；`/ha reset` 清空；`/ha probe <provider> <model>` 手动探测模型。
+- HA 运行态（隔离、失败计数、轮换游标、切换历史）防抖持久化到 `ha-orchestrator.ha.json`，重启自动恢复；编排运行记录写入 `ha-orchestrator.runs.jsonl`。
+- `/ha` 与 `/orchestrate` 的所有斜杠命令见上方「已注册命令」。
 
 ## License
 

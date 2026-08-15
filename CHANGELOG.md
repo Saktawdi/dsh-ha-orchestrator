@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [0.11.1] - 2026-08-15
 
 ### Changed
+- 随包 Skill 改为“仅用户主动调用”：`modelInvocable: false`，不再自动进入模型/子代理的 skill 目录；保留 `userInvocable: true`，用户可手动调用 `ha-orchestrator` skill 快速使用插件，尤其适合上下文注入在特定 preset 下不生效的场景。`/ha` 与 `/orchestrate` 命令继续保留。
 - 仓库文档组织：仅公开归档 6 个文档（architecture / configuration / security / verification / compatibility + settings.png）；内部开发文档（productization-roadmap / design-references / comparison-scoring / awesome-listing-checklist）移入 `docs/local/` 并加入 `.gitignore`，不进入仓库与发布包（`package.json files` 增加 `!docs/local`，verify 新增泄露检查）。
 - README/README.zh-CN、docs/architecture.md、Issue 模板中的内部文档引用同步更新。
 

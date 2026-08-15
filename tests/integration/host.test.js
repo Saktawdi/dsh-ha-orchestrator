@@ -31,6 +31,7 @@ class FakeCtx {
     this.events = [] // ctx.emit 记录（类型化会话事件）
     this.commandDefs = [] // commands.register 记录
     this.skills = [] // skills.register 记录
+    this.typertContributions = [] // typert.register 记录
     this.tools = { register: (tool) => { this.registered.push(tool); return () => {} } }
     this.reflect = {
       provide: (name, value) => { this._services.set(name, value); return () => {} },
@@ -169,6 +170,9 @@ function makeEnv() {
     skills: {
       register: (skill) => { ctx.skills.push(skill); return () => {} },
     },
+    typert: {
+      register: (contribution) => { ctx.typertContributions.push(contribution); return () => {} },
+    },
   }
   for (const [name, impl] of Object.entries(services)) ctx._services.set(name, impl)
   return { ctx, fs, state, subagents, subagentOutputs, subagentFailures, fakeAgent }
@@ -233,6 +237,15 @@ test('装配：工具/上下文注入/事件/RPC 服务全部注册', async () =
   for (const m of ['stateGet', 'stateReload', 'stateSet', 'modelsList', 'agentsGenerate', 'haReset', 'debugLogs', 'debugClear']) {
     assert.equal(typeof rpc[m], 'function', 'RPC 方法: ' + m)
   }
+
+  // Typert host 描述符：Gateway 不依赖本地 node_modules 的 marker WeakMap，
+  // 直接注册 src-json invocation，确保 /api/haOrchestrator/* 不被 404。
+  assert.equal(ctx.typertContributions.length, 1)
+  const typertContribution = ctx.typertContributions[0]
+  assert.equal(typertContribution.package, 'ha-orchestrator')
+  assert.equal(typertContribution.face, 'host')
+  assert.ok(typertContribution.invocations.some((d) => d.namespace === 'haOrchestrator' && d.method === 'stateGet'))
+  assert.ok(typertContribution.invocations.some((d) => d.method === 'stateSet' && d.parameters[0].wire === 'args'))
 
   // 默认配置状态快照
   const snap = await rpc.stateGet()
@@ -1203,15 +1216,17 @@ test('Phase3 Run 卡片：orchestrate 结果含 runId 且展示投影齐备', as
   assert.ok(resultView.title.indexOf('r-abc') >= 0, '完成态标题含 runId')
 })
 
-// ===================== Phase 4：随包 Skill =====================
+// ===================== Phase 4：随包 Skill（仅用户主动调用） =====================
 
-test('Phase4 随包 Skill：注册使用/排障技能（双语正文）', async () => {
+test('Phase4 随包 Skill：注册为用户可主动调用，不自动注入模型/子代理', async () => {
   const { ctx } = makeEnv()
   await mountPlugin(ctx)
 
   const skill = ctx.skills.find((s) => s.name === 'ha-orchestrator')
   assert.ok(skill, 'skill 已注册')
   assert.equal(skill.source, 'bundled')
+  assert.equal(skill.invocation.modelInvocable, false, '不进入模型自动调用目录')
+  assert.equal(skill.invocation.userInvocable, true, '保留用户主动调用入口')
   assert.ok(skill.description.length > 0)
   assert.ok(skill.whenToUse.length > 0)
   assert.ok(skill.content.indexOf('ha-orchestrator') >= 0, '正文包含插件名')
@@ -1225,4 +1240,187 @@ test('Phase4 随包 Skill：注册使用/排障技能（双语正文）', async 
   assert.ok(regs.length >= 2, '语言切换后 skill 重建')
   const enSkill = regs[regs.length - 1]
   assert.ok(enSkill.content.indexOf('troubleshooting') >= 0, 'en 正文生效')
+})
+
+// ===================== Review findings 回归测试 =====================
+
+test('H2 run 文件顺序：连续 run 后磁盘按最新在前', async () => {
+  const { ctx, fs } = makeEnv()
+  await mountPlugin(ctx)
+
+  const r1 = await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'r1', prompt: 'a' }] }, { id: 'a1' })
+  const r2 = await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'r2', prompt: 'b' }] }, { id: 'a1' })
+  const r3 = await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'r3', prompt: 'c' }] }, { id: 'a1' })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+
+  const file = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.runs.jsonl') >= 0)
+  assert.ok(file, 'run 文件已写入')
+  const ids = fs.store.get(file).trim().split(/\r?\n/).map((l) => JSON.parse(l).runId)
+  assert.deepEqual(ids, [r3.runId, r2.runId, r1.runId], '文件内应为最新在前')
+})
+
+test('H1 run 持久化：并发结束不丢记录', async () => {
+  const { ctx, fs } = makeEnv()
+  await mountPlugin(ctx)
+
+  const N = 20
+  await Promise.all(Array.from({ length: N }, (_, i) => toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'c' + i, prompt: 'p' }] }, { id: 'a1' })))
+  await new Promise((resolve) => setTimeout(resolve, 100))
+
+  const file = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.runs.jsonl') >= 0)
+  assert.ok(file, 'run 文件已写入')
+  const lines = fs.store.get(file).trim().split(/\r?\n/).filter(Boolean)
+  assert.equal(lines.length, N, '并发 run 不应丢失磁盘记录')
+})
+
+test('H3 haReset 后重启不恢复旧状态', async () => {
+  const fs = makeFs()
+  const envA = envWithSharedFs(fs)
+  await mountPlugin(envA.ctx)
+  const rpcA = envA.ctx.get('haOrchestrator')
+
+  await rpcA.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await envA.ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: envA.fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  await envA.ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: envA.fakeAgent }, () => Promise.resolve(undefined))
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const haFile = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.ha.json') >= 0)
+  assert.ok(haFile, 'HA 状态文件已写入')
+  assert.equal(JSON.parse(fs.store.get(haFile)).quarantine.length, 1)
+
+  await rpcA.haReset()
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  assert.equal(JSON.parse(fs.store.get(haFile)).quarantine.length, 0, 'reset 后磁盘状态应为空')
+
+  const envB = envWithSharedFs(fs)
+  await mountPlugin(envB.ctx)
+  const statusB = await envB.ctx.get('haOrchestrator').haStatus()
+  assert.equal(statusB.quarantine.length, 0, '重启后不应恢复旧隔离')
+  assert.equal(statusB.history.length, 0)
+})
+
+test('H4 stateImport 缺失节回退默认', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  await rpc.stateSet({ patch: { debug: { enabled: true, showCard: true } } })
+  const imported = await rpc.stateImport({ json: JSON.stringify({ orch: { maxAgents: 21 } }) })
+  assert.equal(imported.config.orch.maxAgents, 21)
+  assert.equal(imported.config.debug.enabled, false, '缺失 debug 节应回退默认')
+  assert.equal(imported.config.debug.showCard, false)
+})
+
+test('H5 编排辅助步骤失败保留已完成 runs', async () => {
+  const { ctx, subagentFailures } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  subagentFailures.set('merge', 99)
+  await assert.rejects(
+    toolExec(ctx, 'orchestrate', { mode: 'fanout', mergeInstructions: '请总结', tasks: [{ id: 't1', prompt: 'a' }, { id: 't2', prompt: 'b' }] }, { id: 'a1' }),
+    /merge/,
+  )
+  const { runs } = await rpc.orchRuns()
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].runs.length, 2, '失败记录应保留已完成任务结果')
+  assert.deepEqual(runs[0].runs.map((r) => r.status), ['completed', 'completed'])
+})
+
+test('H5 预算超限失败记录保留已完成 runs', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  await assert.rejects(
+    toolExec(ctx, 'orchestrate', { mode: 'fanout', budgetAgents: 2, tasks: [{ id: 'b1', prompt: 'a' }, { id: 'b2', prompt: 'b' }, { id: 'b3', prompt: 'c' }] }, { id: 'a1' }),
+    /预算|budget/i,
+  )
+  const { runs } = await rpc.orchRuns()
+  assert.ok(runs[0].runs.length >= 1, '预算失败记录应保留已完成的子任务结果')
+  assert.ok(runs[0].runs.every((r) => r.status === 'completed'))
+})
+
+test('M1 pipeline resume 保留 per-task agent', async () => {
+  const { ctx, subagentFailures } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  await rpc.stateSet({ patch: { orch: { agents: [
+    { name: 'reviewer', provider: '', model: '', description: '', systemPrompt: '' },
+    { name: 'custom1', provider: 'p0', model: 'm0', description: 'c1', systemPrompt: 'PERSONA_CUSTOM1' },
+    { name: 'custom2', provider: 'p1', model: 'm1', description: 'c2', systemPrompt: 'PERSONA_CUSTOM2' },
+  ] } } })
+
+  subagentFailures.set('custom2', 99)
+  const first = await toolExec(ctx, 'orchestrate', {
+    mode: 'pipeline',
+    tasks: [
+      { id: 'st1', prompt: 'a', agent: 'custom1' },
+      { id: 'st2', prompt: 'b', agent: 'custom2' },
+      { id: 'st3', prompt: 'c', agent: 'custom1' },
+    ],
+  }, { id: 'a1' })
+  assert.equal(first.runs[1].status, 'error')
+  const { runs } = await rpc.orchRuns()
+  const failedRunId = runs[0].runId
+
+  subagentFailures.delete('custom2')
+  const resumed = await toolExec(ctx, 'orchestrate', { mode: 'pipeline', resume: failedRunId }, { id: 'a1' })
+  assert.equal(resumed.runs[1].agent, 'custom2', '恢复后的 st2 应保留原 agent')
+  assert.equal(resumed.runs[2].agent, 'custom1', '恢复后的 st3 应保留原 agent')
+  const resumedCalls = ctx.subagentCalls.slice(2)
+  assert.ok(resumedCalls.some((c) => c.request.persona === 'PERSONA_CUSTOM2'), 'st2 恢复使用 custom2 persona')
+  assert.ok(resumedCalls.some((c) => c.request.persona === 'PERSONA_CUSTOM1'), 'st3 恢复使用 custom1 persona')
+})
+
+test('M2 haProbeNow 未隔离时真正探测', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  const res = await rpc.haProbeNow({ provider: 'p0', model: 'm0' })
+  assert.equal(res.ok, true, '未隔离键手动探测应返回 ok')
+  assert.notEqual(res.reason, 'not-quarantined')
+})
+
+test('M3 无 timer 时探测调度不爆栈', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  ctx._services.delete('timer')
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], probeEnabled: true, cooldownMs: 60000 } } })
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+  const status = await rpc.haStatus()
+  assert.equal(status.quarantine.length, 1, '无 timer 时仍应能隔离且不崩溃')
+})
+
+test('M4 fanout 任务错误保留 agent', async () => {
+  const { ctx, subagentFailures } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  await rpc.stateSet({ patch: { orch: { agents: [
+    { name: 'reviewer', provider: '', model: '', description: '', systemPrompt: '' },
+    { name: 'custom1', provider: 'p0', model: 'm0', description: 'c1', systemPrompt: 'PERSONA_CUSTOM1' },
+  ] } } })
+  subagentFailures.set('custom1', 99)
+  const res = await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 't1', prompt: 'a', agent: 'custom1' }] }, { id: 'a1' })
+  assert.equal(res.runs[0].status, 'error')
+  assert.equal(res.runs[0].agent, 'custom1', '错误 run 应保留 agent 归属')
+})
+
+test('L2 /orchestrate runs 在 fs 不可用时回退内存', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  const res = await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'm1', prompt: 'a' }] }, { id: 'a1' })
+  ctx._services.delete('fs')
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const def = ctx.commandDefs.find((d) => d.name === 'orchestrate')
+  assert.ok(def, '/orchestrate 命令已注册')
+  const list = await def.handler({ input: 'runs' })
+  assert.ok(list.text.indexOf(res.runId) >= 0, 'fs 不可用时命令仍能列出内存 run')
 })

@@ -109,7 +109,7 @@ Requires `pnpm` on PATH:
 
 ## Usage
 
-No special commands. The model decides when to orchestrate:
+No special instructions are required for normal use — the model decides when to orchestrate:
 
 ```
 You:    Research these three open-source projects, compare licenses and community activity, and recommend one.
@@ -125,16 +125,34 @@ You:    Write a competitive analysis report and have a senior reviewer vet it.
 Model:  calls orchestrate (supervisor) → parallel analysis → review and merge → report
 ```
 
+### Commands
+
+The plugin also registers two optional slash commands for inspecting and managing runtime state:
+
+| Command | Description |
+| :-- | :-- |
+| `/ha` | Show the current HA status (same as `/ha status`). |
+| `/ha status` | Show quarantine, failure counts, rotation cursors, switch history, and probe log. |
+| `/ha diag` | Show plugin diagnostics: service availability, persistence, language, and injection status. |
+| `/ha reset` | Clear quarantine, failure counts, cursors, and history. |
+| `/ha probe <provider> <model>` | Manually probe a model to verify recovery. |
+| `/orchestrate` | List recent orchestrate runs (same as `/orchestrate runs`). |
+| `/orchestrate runs` | List the 10 most recent orchestrate runs. |
+| `/orchestrate show <runId>` | Show details of a specific orchestrate run. |
+| `/orchestrate presets` | List configured orchestration presets. |
+
+> These commands are registered through the DSH `commands` service. If a deployment does not provide that service, the plugin still works normally; only these slash commands are unavailable.
+
 ### Settings
 
 Settings → "HA 与编排":
 
 | Card | What you can do |
 | :-- | :-- |
-| Model High Availability | On/off, backup list (+ "Recommended backups"), cooldown, failure threshold, burst window, provider circuit threshold, probe recovery, context-overflow degrade, error-code filter, quarantined models and failover history |
+| Model High Availability | On/off, backup list (+ "Recommended backups"), and an "Advanced" section for cooldown, failure threshold, burst window, provider circuit threshold, probe recovery, context-overflow degrade, error-code filter, persist selection, and stop steering |
 | Subagent Orchestration | On/off, subagent provider, default concurrency, max subagents per run, global concurrency cap, pipeline stage retry |
 | Custom Subagents | Add, edit, reorder, delete; "AI Generate" creates one from a description |
-| Diagnostics | HA runtime (quarantine with level, failure counts, cursors, probes) and recent orchestrate runs |
+| Diagnostics | HA runtime (current default, quarantine with level, failure counts, cursors, probes, failover history, reset) and recent orchestrate runs |
 | System | Plugin language (follow system / Chinese / English), the orchestration hint toggle, the live injection status, one-click config export/import, and the debug card toggle |
 
 ## Documentation
@@ -148,8 +166,8 @@ Settings → "HA 与编排":
 ## Notes
 
 - Config is written to the first writable location among the current session workspace / `DSH_HOME`, the sandbox `workspace-write` writable root, and the fs default cwd (file `ha-orchestrator.config.json`, backup `ha-orchestrator.config.backup.json`), and looked up in the same order and restored on startup.
-- HA runtime state (quarantine, failure counters, rotation cursors, switch history) is persisted to `ha-orchestrator.ha.json` (debounced) and restored on startup; orchestrate runs are recorded to `ha-orchestrator.runs.jsonl` (see `/orchestrate runs` / `/orchestrate show <runId>`).
-- `/ha status` shows circuits, counts, cursors and probes; `/ha reset` clears them; `/ha probe <provider> <model>` probes a model manually.
+- HA runtime state (quarantine, failure counters, rotation cursors, switch history) is persisted to `ha-orchestrator.ha.json` (debounced) and restored on startup; orchestrate runs are recorded to `ha-orchestrator.runs.jsonl`.
+- All `/ha` and `/orchestrate` slash commands are listed in the [Commands](#commands) section above.
 
 ## License
 
