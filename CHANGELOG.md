@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.11.1] - 2026-08-15
+
+### Changed
+- 仓库文档组织：仅公开归档 6 个文档（architecture / configuration / security / verification / compatibility + settings.png）；内部开发文档（productization-roadmap / design-references / comparison-scoring / awesome-listing-checklist）移入 `docs/local/` 并加入 `.gitignore`，不进入仓库与发布包（`package.json files` 增加 `!docs/local`，verify 新增泄露检查）。
+- README/README.zh-CN、docs/architecture.md、Issue 模板中的内部文档引用同步更新。
+
 ## [0.11.0] - 2026-08-15
 
 ### Added

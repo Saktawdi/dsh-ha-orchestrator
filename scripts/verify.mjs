@@ -128,6 +128,10 @@ await check('npm pack dry-run', () => {
   for (const required of ['cordis.patch.yml', '.language/zh.json', '.language/en.json', 'lib/index.js', 'lib/client.js', 'lib/config.js', 'lib/ha-core.js', 'lib/orch-runner.js', 'lib/remote.js', 'lib/index.d.ts', 'src/index.ts', 'src/config.ts', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md']) {
     assert(files.includes(required), `missing packed file: ${required}`)
   }
+  // 本地开发机密文档（docs/local/）绝不进入发布包
+  for (const f of files) {
+    assert(!f.startsWith('docs/local/'), `local-only doc leaked into package: ${f}`)
+  }
 })
 
 console.log(`[verify] ${checks.length} checks passed`)

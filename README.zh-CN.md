@@ -139,7 +139,6 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 ## 文档
 
-- [产品化路线图](docs/productization-roadmap.md) —— 分阶段计划与当前进度
 - [架构](docs/architecture.md) —— 模块职责、数据流、服务契约
 - [配置参考](docs/configuration.md) —— 全部配置项与默认值/钳制规则
 - [安全说明](docs/security.md) —— 信任边界与已落地防护

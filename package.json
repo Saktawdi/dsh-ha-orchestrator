@@ -1,6 +1,6 @@
 {
   "name": "ha-orchestrator",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Model high-availability failover + subagent orchestration (fanout/pipeline/supervisor) for DeepSeek Harness",
   "keywords": [
     "dsh",
@@ -21,6 +21,7 @@
     "README.zh-CN.md",
     "CHANGELOG.md",
     "docs",
+    "!docs/local",
     "LICENSE"
   ],
   "scripts": {

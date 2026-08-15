@@ -19,6 +19,9 @@ temp/
 *.bak
 *.orig
 
+# ===== 本地开发机密文档（不进入仓库/发布包） =====
+docs/local/
+
 # ===== 运行时配置持久化（插件在运行目录生成） =====
 ha-orchestrator.config.json
 ha-orchestrator.config.backup.json

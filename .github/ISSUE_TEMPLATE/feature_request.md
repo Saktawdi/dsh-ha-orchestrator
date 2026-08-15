@@ -21,7 +21,7 @@ assignees:
 - [ ] **Phase 3 ｜ UI**（设置页 / Run 面板 / 可访问性 / 错误体验）
 - [ ] **Phase 4 ｜ 发布**（npm / 兼容矩阵 / 文档 / 社区 / Skill）
 
-> 对应路线图详见 [`docs/productization-roadmap.md`](../../docs/productization-roadmap.md)。
+> 阶段划分说明见仓库内 `docs/` 目录文档（架构 / 配置 / 安全 / 验证 / 兼容矩阵）。
 
 ## 备选方案
 

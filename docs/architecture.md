@@ -4,7 +4,7 @@
 > 范围：基于仓库实际代码（`src/index.ts`、`src/config.ts`、`src/ha-core.ts`、`src/orch-runner.ts`、
 >       `src/language.ts`、`src/remote.ts`、`src/types.ts`、`package.json`、`cordis.patch.yml`）编写，
 >      说明本插件的静态 Cordis 装配方式、模块职责、三条关键数据流、服务契约与设计原则。
-> 配套路线图：`docs/productization-roadmap.md`（产品定位与迭代方向）。
+> 配套路线图：`docs/local/productization-roadmap.md`（本地开发文档，不进仓库/发布包）。
 
 ---
 
@@ -231,4 +231,4 @@ newRunId -> acquireOrchSlot(全局并发信号量)
 
 ---
 
-*文档基于 `src/` 实测代码整理；产品方向与路线图见 `docs/productization-roadmap.md`。*
+*文档基于 `src/` 实测代码整理；产品方向与路线图见 `docs/local/productization-roadmap.md`（本地开发文档）。*

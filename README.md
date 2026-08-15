@@ -139,7 +139,6 @@ Settings → "HA 与编排":
 
 ## Documentation
 
-- [Productization roadmap](docs/productization-roadmap.md) — phased plan and current status
 - [Architecture](docs/architecture.md) — modules, data flows, service contract
 - [Configuration](docs/configuration.md) — every config key with defaults and clamping rules
 - [Security](docs/security.md) — trust boundary and applied hardening
