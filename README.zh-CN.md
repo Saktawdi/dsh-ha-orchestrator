@@ -131,15 +131,26 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 | 卡片 | 作用 |
 | :-- | :-- |
-| 模型高可用 | 开关、备用模型列表、冷却时间、失败阈值、错误码过滤、隔离模型与切换历史 |
-| 子智能体编排 | 开关、子智能体提供方、默认并发数、单次任务子智能体上限 |
+| 模型高可用 | 开关、备用模型列表（含「推荐备份」）、冷却时间、失败阈值、突发窗口、Provider 熔断阈值、探测恢复、上下文超长降级、错误码过滤、隔离模型与切换历史 |
+| 子智能体编排 | 开关、子智能体提供方、默认并发数、单次任务子智能体上限、全局并发上限、流水线阶段重试 |
 | 自定义子智能体 | 增删改、排序；「智能新增」用 AI 生成 |
-| 系统 | 插件语言（跟随系统 / 中文 / English）、编排引导开关、注入状态、调试卡片开关 |
+| 诊断 | HA 运行态（隔离含层级/失败计数/游标/探测）与最近编排运行 |
+| 系统 | 插件语言（跟随系统 / 中文 / English）、编排引导开关、注入状态、一键导出/导入配置、调试卡片开关 |
+
+## 文档
+
+- [产品化路线图](docs/productization-roadmap.md) —— 分阶段计划与当前进度
+- [架构](docs/architecture.md) —— 模块职责、数据流、服务契约
+- [配置参考](docs/configuration.md) —— 全部配置项与默认值/钳制规则
+- [安全说明](docs/security.md) —— 信任边界与已落地防护
+- [验证与发布](docs/verification.md) —— 测试矩阵、门禁、发布步骤
+- [兼容矩阵](docs/compatibility.md) —— 已验证 DSH 快照与 peer 策略
 
 ## 注意事项
 
 - 配置写入「当前会话 workspace / DSH_HOME、沙箱 workspace-write 可写根、fs 默认 cwd」中第一个可写位置（文件 `ha-orchestrator.config.json`，备份 `ha-orchestrator.config.backup.json`），启动时按相同顺序查找并恢复。
-- 隔离中的模型、计数和切换历史保存在内存里，插件更新或进程重启后重置。
+- HA 运行态（隔离、失败计数、轮换游标、切换历史）防抖持久化到 `ha-orchestrator.ha.json`，重启自动恢复；编排运行记录写入 `ha-orchestrator.runs.jsonl`（见 `/orchestrate runs` / `/orchestrate show <runId>`）。
+- `/ha status` 查看熔断/计数/游标/探测；`/ha reset` 清空；`/ha probe <provider> <model>` 手动探测模型。
 
 ## License
 

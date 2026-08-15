@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.8.0] - 2026-08-15
+
+### Added
+- 路线图 Phase 4（发布与生态）文档体系与社区基建落地：
+  - 文档体系：`docs/architecture.md`（架构/数据流/服务契约）、`docs/configuration.md`（全部配置项参考）、`docs/security.md`（安全说明）、`docs/verification.md`（测试矩阵/门禁/发布流程）、`docs/compatibility.md`（兼容矩阵）；README/README.zh-CN 增加文档索引与兼容说明，修正过期的「HA 状态仅存内存」描述；
+  - 社区基建：`CONTRIBUTING.md`（开发约定/门禁/提交规范）、Issue 模板（bug_report / feature_request / compatibility）；
+  - 可访问性：`prefers-reduced-motion` 降级动画、`:focus-visible` 键盘焦点样式；
+  - 发布产物验证：`npm pack` 实际产出 tgz（40 文件，~2.6MB）；gh CLI 未安装、npm 未登录，GitHub Release 与 npm publish 待环境就绪后按 `docs/verification.md` 执行。
+
 ## [0.7.0] - 2026-08-15
 
 ### Added

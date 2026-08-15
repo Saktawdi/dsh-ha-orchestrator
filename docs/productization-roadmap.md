@@ -2,7 +2,7 @@
 
 > 版本：草案 v1.0
 > 范围：基于 2026-08 GitHub / npm 生态调研，为 ha-orchestrator 从“个人可用插件”升级为“优秀产品化 DSH 插件”给出路线图。
-> 当前基线：v0.4.0（2026-08-15）。静态 Cordis 插件；源码 TypeScript（`src/`：index + 5 个纯逻辑模块 + types 服务契约），`lib/` 为 tsc 构建产物（含 `.d.ts`）；145 测试（120 单测 + 25 集成）+ `scripts/verify.mjs` 离线冒烟（6 组）+ GitHub Actions（Linux/Windows，typecheck/build/test/verify 全链路）；HA 运行态持久化、两层熔断、滑动窗口、探测恢复、错误分类、类型化事件、`/ha` 命令已落地；`dsh plugin add "file:<repo>"` 可安装；尚未发布 npm。
+> 当前基线：v0.8.0（2026-08-15）。静态 Cordis 插件；源码 TypeScript（`src/`），`lib/` 为 tsc 构建产物（含 `.d.ts`）；160 测试（120 单测 + 40 集成）+ verify 冒烟（6 组）+ GitHub Actions（Linux/Windows 全链路）；HA 持久化/两层熔断/探测恢复/类型化事件、run 持久化/事件/命令/配方/resume、诊断卡片/配置导出导入、docs 8 篇 + CONTRIBUTING + Issue 模板；`dsh plugin add "file:<repo>"` 可安装；npm 发布与 GitHub Release 待环境就绪（gh/npm 未认证）。
 
 ---
 
@@ -130,10 +130,11 @@ ha-orchestrator/
 │   ├── comparison-scoring.md         # 竞品评分（已落地）
 │   ├── design-references.md          # UI/产品设计参考（已落地）
 │   ├── productization-roadmap.md     # 本路线图（已落地）
-│   ├── architecture.md               # 待补
-│   ├── configuration.md              # 待补
-│   ├── security.md                   # 待补
-│   └── compatibility.md              # 待补
+│   ├── architecture.md               # 已落地（v0.8.0）
+│   ├── configuration.md              # 已落地（v0.8.0）
+│   ├── security.md                   # 已落地（v0.8.0）
+│   ├── verification.md               # 已落地（v0.8.0）
+│   └── compatibility.md              # 已落地（v0.8.0）
 └── README.md / README.zh-CN.md
 ```
 
@@ -238,31 +239,29 @@ ha-orchestrator/
   - 安装后无 backups 时，UI 给清晰引导（HA 卡片空状态文案 + 「推荐备份」按钮）（v0.7.0）；
   - 插件加载失败时的可操作诊断待补（缺服务/缺 provider/peer 冲突提示）。
 
-### Phase 4：发布与生态（建议 2–3 周）
+### Phase 4：发布与生态（建议 2–3 周，文档体系与社区基建已完成，发布动作待环境就绪）
 
 目标：成为一个“可被发现、可升级、可信任”的公开插件。
 
 - [ ] **npm 发布**：
-  - 包名建议 `ha-orchestrator` 或 `@saktawdi/ha-orchestrator`（需确认 npm 可用）；
-  - 配置 Trusted Publishing / tokenless release；
-  - `npm pack` 产物包含 `lib/`、`cordis.patch.yml`、`.language/`、文档（`files` 字段已就绪，`prepublishOnly` 门禁已配置）。
-- [ ] **兼容矩阵**：
-  - 在 README/`compatibility.json` 中记录已验证的 DSH 版本、Node 版本、平台；
-  - peerDependencies 精确卡住 rc 版本线，版本升级时主动 bump。
-- [ ] **文档体系**：
-  - README：安装、快速开始、配置、常见问题；
-  - docs/architecture.md、docs/configuration.md、docs/security.md、docs/verification.md；
-  - 提供“让 AI 安装”的一段式 prompt（当前 README 已有，继续维护）。
-- [ ] **发布流程**：
-  - CHANGELOG + semantic release 或手动 tag（CHANGELOG 已维护至 v0.2.2）；
-  - `pnpm verify` 作为发布前门禁；
-  - GitHub Release 附带 `.tgz`。
-- [ ] **社区反馈**：
-  - Issue 模板（bug / feature / compatibility）；
-  - 欢迎 PR，提供 CONTRIBUTING.md；
-  - 考虑提交到 awesome-dsh-plugin / dsh-suite 等目录。
+  - 包名 `ha-orchestrator`；`publishConfig.access: public` 已配置；Trusted Publishing 待 npm 账号启用；
+  - `npm pack` 产物已验证（40 文件，含 `lib/`、`cordis.patch.yml`、`.language/`、`src/`、文档；`prepublishOnly` 门禁已配置）；
+  - 实际 `npm publish` 待 npm 登录（当前本机未认证，需 `npm adduser` 或 CI 发布 token）。
+- [x] **兼容矩阵**：
+  - `docs/compatibility.md` 已落地：已验证 DSH rc.6 快照、Node >=20.19、Linux/Windows CI、peerDependencies 表与兼容策略（v0.8.0）。
+- [x] **文档体系**：
+  - README 双语（安装/快速开始/配置/文档索引）+ docs 8 篇（architecture / configuration / security / verification / compatibility / roadmap / comparison / design-references）；
+  - 提供“让 AI 安装”的一段式 prompt（README 已有，持续维护）；
+  - 升级指南/FAQ 待补（低优先级）。
+- [x] **发布流程**：
+  - CHANGELOG 已维护至 v0.8.0；`npm run verify` 作为发布前门禁（prepublishOnly 全链路）；
+  - GitHub Release 附 `.tgz`：流程已写入 `docs/verification.md`，执行需 gh CLI（本机未安装）或 GitHub Web 上传。
+- [x] **社区反馈**：
+  - Issue 模板（bug / feature / compatibility）已落地（v0.8.0）；
+  - `CONTRIBUTING.md` 已落地（v0.8.0）；
+  - 提交 awesome-dsh-plugin / dsh-suite 目录待 npm 发布后执行。
 - [ ] **可选 Skill**：
-  - 随包提供 `ha-orchestrator` 使用/排障 Skill（参考 `dsh-model-failover` 的 bundled skill 模式）。
+  - 随包提供 `ha-orchestrator` 使用/排障 Skill（参考 `dsh-model-failover` 的 bundled skill 模式）待补。
 
 ---
 

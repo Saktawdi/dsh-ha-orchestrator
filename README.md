@@ -131,15 +131,26 @@ Settings → "HA 与编排":
 
 | Card | What you can do |
 | :-- | :-- |
-| Model High Availability | On/off, backup list, cooldown, failure threshold, error-code filter, quarantined models and failover history |
-| Subagent Orchestration | On/off, subagent provider, default concurrency, max subagents per run |
+| Model High Availability | On/off, backup list (+ "Recommended backups"), cooldown, failure threshold, burst window, provider circuit threshold, probe recovery, context-overflow degrade, error-code filter, quarantined models and failover history |
+| Subagent Orchestration | On/off, subagent provider, default concurrency, max subagents per run, global concurrency cap, pipeline stage retry |
 | Custom Subagents | Add, edit, reorder, delete; "AI Generate" creates one from a description |
-| System | Plugin language (follow system / Chinese / English), the orchestration hint toggle, the live injection status, and the debug card toggle |
+| Diagnostics | HA runtime (quarantine with level, failure counts, cursors, probes) and recent orchestrate runs |
+| System | Plugin language (follow system / Chinese / English), the orchestration hint toggle, the live injection status, one-click config export/import, and the debug card toggle |
+
+## Documentation
+
+- [Productization roadmap](docs/productization-roadmap.md) — phased plan and current status
+- [Architecture](docs/architecture.md) — modules, data flows, service contract
+- [Configuration](docs/configuration.md) — every config key with defaults and clamping rules
+- [Security](docs/security.md) — trust boundary and applied hardening
+- [Verification & release](docs/verification.md) — test matrix, gates, release steps
+- [Compatibility](docs/compatibility.md) — verified DSH snapshots and peer strategy
 
 ## Notes
 
 - Config is written to the first writable location among the current session workspace / `DSH_HOME`, the sandbox `workspace-write` writable root, and the fs default cwd (file `ha-orchestrator.config.json`, backup `ha-orchestrator.config.backup.json`), and looked up in the same order and restored on startup.
-- Quarantined models, counters, and failover history live in memory and reset on plugin update or process restart.
+- HA runtime state (quarantine, failure counters, rotation cursors, switch history) is persisted to `ha-orchestrator.ha.json` (debounced) and restored on startup; orchestrate runs are recorded to `ha-orchestrator.runs.jsonl` (see `/orchestrate runs` / `/orchestrate show <runId>`).
+- `/ha status` shows circuits, counts, cursors and probes; `/ha reset` clears them; `/ha probe <provider> <model>` probes a model manually.
 
 ## License
 
