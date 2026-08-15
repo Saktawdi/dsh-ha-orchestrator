@@ -49,6 +49,16 @@ export interface HaConfig {
   degradeContextWindow: boolean
 }
 
+/** 编排预设/配方：把一次成功的 orchestrate 调用参数保存为可复用条目。 */
+export interface OrchPreset {
+  name: string
+  mode: string
+  agent: string
+  supervisorAgent: string
+  mergeInstructions: string
+  tasks: Array<{ id?: string; label?: string; agent?: string; prompt: string }>
+}
+
 /** 编排配置节。 */
 export interface OrchConfig {
   enabled: boolean
@@ -58,6 +68,10 @@ export interface OrchConfig {
   agents: AgentEntry[]
   /** pipeline 单阶段失败重试次数（0 = 不重试，直接隔离该阶段）。 */
   stageRetry: number
+  /** 全局并发上限（跨 run 共享；0 = 不限）。 */
+  globalConcurrency: number
+  /** 已保存的编排配方。 */
+  presets: OrchPreset[]
 }
 
 /** 调试配置节。 */
@@ -116,6 +130,9 @@ export const defaultConfig: Config = {
     maxAgents: 8,
     // pipeline 阶段失败默认不重试：失败阶段标记 error 并中止后续阶段（阶段隔离）
     stageRetry: 0,
+    // 全局并发上限默认不限（0）；单 run 并发由 concurrency/maxAgents 控制
+    globalConcurrency: 0,
+    presets: [],
     agents: [
       {
         name: 'reviewer',
@@ -199,6 +216,26 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
       orch.concurrency = Math.max(1, Math.min(32, Number(orch.concurrency) || 1))
       orch.maxAgents = Math.max(1, Math.min(64, Number(orch.maxAgents) || 1))
       orch.stageRetry = Math.max(0, Math.min(5, Number(orch.stageRetry) || 0))
+      orch.globalConcurrency = Math.max(0, Math.min(64, Number(orch.globalConcurrency) || 0))
+      orch.presets = Array.isArray(orch.presets)
+        ? (orch.presets as unknown as RawSection[]).filter((p): p is RawSection => !!p && typeof p === 'object' && !!String(p.name || '').trim())
+          .map((p: RawSection) => ({
+            name: String(p.name || '').trim(),
+            mode: String(p.mode || 'fanout'),
+            agent: String(p.agent || ''),
+            supervisorAgent: String(p.supervisorAgent || ''),
+            mergeInstructions: String(p.mergeInstructions || ''),
+            tasks: Array.isArray(p.tasks)
+              ? (p.tasks as unknown as RawSection[]).filter((t): t is RawSection => !!t && typeof t === 'object' && !!String(t.prompt || '').trim())
+                .map((t: RawSection) => ({
+                  id: String(t.id || ''),
+                  label: String(t.label || ''),
+                  agent: String(t.agent || ''),
+                  prompt: String(t.prompt || ''),
+                }))
+              : [],
+          }))
+        : []
       orch.agents = Array.isArray(orch.agents)
         ? orch.agents.filter((a: AgentEntry | RawSection) => !!a && typeof a === 'object' && String(a.name || '').trim())
           .map((a: AgentEntry | RawSection) => ({

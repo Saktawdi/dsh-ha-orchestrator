@@ -33,6 +33,20 @@ export interface HaConfig {
     /** CONTEXT_WINDOW_EXCEEDED 时降级重试（去掉 reasoningEffort）。 */
     degradeContextWindow: boolean;
 }
+/** 编排预设/配方：把一次成功的 orchestrate 调用参数保存为可复用条目。 */
+export interface OrchPreset {
+    name: string;
+    mode: string;
+    agent: string;
+    supervisorAgent: string;
+    mergeInstructions: string;
+    tasks: Array<{
+        id?: string;
+        label?: string;
+        agent?: string;
+        prompt: string;
+    }>;
+}
 /** 编排配置节。 */
 export interface OrchConfig {
     enabled: boolean;
@@ -42,6 +56,10 @@ export interface OrchConfig {
     agents: AgentEntry[];
     /** pipeline 单阶段失败重试次数（0 = 不重试，直接隔离该阶段）。 */
     stageRetry: number;
+    /** 全局并发上限（跨 run 共享；0 = 不限）。 */
+    globalConcurrency: number;
+    /** 已保存的编排配方。 */
+    presets: OrchPreset[];
 }
 /** 调试配置节。 */
 export interface DebugConfig {

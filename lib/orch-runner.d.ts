@@ -67,7 +67,9 @@ export declare function findUnknownAgents(args: OrchestrateArgsLike | null | und
 };
 export declare function truncateTasks<T>(tasks: T[], maxAgents: number): T[];
 export declare function resolveConcurrency(argsConcurrency: number | null | undefined, cfgConcurrency: number | null | undefined, maxAgents: number): number;
-export declare function resolveMode(mode: string | null | undefined): 'fanout' | 'pipeline' | 'supervisor';
+/** 编排模式。 */
+export type OrchestrateMode = 'fanout' | 'pipeline' | 'supervisor' | 'map-reduce' | 'router';
+export declare function resolveMode(mode: string | null | undefined): OrchestrateMode;
 export declare function buildRunPrompt(task: TaskLike, extra: string | null | undefined, mergedPrefix: string): string;
 export declare function buildSubagentRequest(task: TaskLike, extra: string | null | undefined, agentDef: AgentDefLike | null | undefined, mergedPrefix: string, parent: unknown, signal: AbortSignal | null | undefined): SubagentRequestLike;
 export declare function normalizeRunResult(task: TaskLike, agentDef: AgentDefLike | null | undefined, res: SubagentResultLike): RunResultLike;

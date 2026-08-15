@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.0] - 2026-08-15
+
+### Added
+- 路线图 Phase 2 剩余项落地：
+  - **全局并发预算**：`orch.globalConcurrency`（0–64，默认 0 = 不限）跨 run 共享信号量，多个编排并发时排队；
+  - **supervisor 评审轮次**：`reviewRounds`（1–3）多轮评审，每轮以上一轮输出为上下文；评审 run 计入结果 runs；
+  - **新编排模式**：`map-reduce`（并行执行 + 归约任务）、`router`（从候选任务中路由选择一项执行）；
+  - **配方（预设）复用**：RPC `orchSavePreset`/`orchListPresets`/`orchDeletePreset` + 工具参数 `preset` 按名执行（调用参数可覆盖），`/orchestrate presets` 查看；
+  - **runId 恢复**：工具参数 `resume <runId>`——已完成子任务复用其结果（fanout/supervisor 跳过、pipeline 从失败阶段续跑并继承 carry），结果 runs 按原任务顺序合并，记录带 `resumedFrom`；
+  - run 记录补全任务定义（含 prompt），旧记录缺 prompt 时恢复给出明确报错；
+  - 设置页新增「全局并发上限」「流水线阶段重试」配置项。
+
 ## [0.5.0] - 2026-08-15
 
 ### Added

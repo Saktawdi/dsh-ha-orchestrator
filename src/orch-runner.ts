@@ -105,9 +105,12 @@ export function resolveConcurrency(argsConcurrency: number | null | undefined, c
   return Math.max(1, Math.min(Number(argsConcurrency) || Number(cfgConcurrency) || 3, m))
 }
 
-// 归一化模式：仅 pipeline / supervisor 原样返回，其余恒为 fanout。
-export function resolveMode(mode: string | null | undefined): 'fanout' | 'pipeline' | 'supervisor' {
-  if (mode === 'pipeline' || mode === 'supervisor') return mode
+/** 编排模式。 */
+export type OrchestrateMode = 'fanout' | 'pipeline' | 'supervisor' | 'map-reduce' | 'router'
+
+// 归一化模式：仅已支持的模式原样返回，其余恒为 fanout。
+export function resolveMode(mode: string | null | undefined): OrchestrateMode {
+  if (mode === 'pipeline' || mode === 'supervisor' || mode === 'map-reduce' || mode === 'router') return mode
   return 'fanout'
 }
 

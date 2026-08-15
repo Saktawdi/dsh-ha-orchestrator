@@ -103,21 +103,30 @@ function makeEnv() {
     list: () => ['provider-a'],
     async start(provider, request) {
       ctx.subagentCalls.push({ provider, request })
-      const label = request.label
-      const remaining = subagentFailures.get(label) || 0
-      if (remaining > 0) {
-        subagentFailures.set(label, remaining - 1)
-        throw new Error('subagent upstream failure: ' + label)
-      }
-      const text = subagentOutputs.has(label)
-        ? subagentOutputs.get(label)
-        : 'OUT:' + label
-      return {
-        result: Promise.resolve({
-          stopReason: 'completed',
-          output: [{ type: 'text', text }],
-        }),
-        async dispose() {},
+      // 并发观测：全局并发测试用
+      ctx.activeSubagents = (ctx.activeSubagents || 0) + 1
+      ctx.maxActiveSubagents = Math.max(ctx.maxActiveSubagents || 0, ctx.activeSubagents)
+      try {
+        const label = request.label
+        const remaining = subagentFailures.get(label) || 0
+        if (remaining > 0) {
+          subagentFailures.set(label, remaining - 1)
+          throw new Error('subagent upstream failure: ' + label)
+        }
+        const delay = state.subagentDelay || 0
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
+        const text = subagentOutputs.has(label)
+          ? subagentOutputs.get(label)
+          : 'OUT:' + label
+        return {
+          result: Promise.resolve({
+            stopReason: 'completed',
+            output: [{ type: 'text', text }],
+          }),
+          async dispose() {},
+        }
+      } finally {
+        ctx.activeSubagents -= 1
       }
     },
   }
@@ -368,7 +377,8 @@ test('orchestrate supervisor：并行任务 + 评审合成', async () => {
     tasks: [{ id: 's1', prompt: 'task-a' }, { id: 's2', prompt: 'task-b' }],
   }, { id: 'a1' })
 
-  assert.equal(res.runs.length, 2)
+  assert.equal(res.runs.length, 3, '任务 runs + 评审 run')
+  assert.equal(res.runs[2].id, 'supervisor')
   assert.equal(ctx.subagentCalls.length, 3)
   const sup = ctx.subagentCalls[2].request
   assert.equal(sup.label, 'supervisor')
@@ -883,4 +893,144 @@ test('Phase2 失败留痕：未知 agent 报错也生成 run 记录', async () =
   assert.equal(runs.length, 1, '失败调用也留痕')
   assert.ok(runs[0].summary.indexOf('ghost') >= 0, 'summary 记录失败原因')
   assert.equal(runs[0].runs.length, 0)
+})
+
+// ===================== Phase 2 第二轮：预算/轮次/模式/配方/恢复 =====================
+
+test('Phase2 supervisor 评审轮次：reviewRounds=2 两轮评审', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'supervisor',
+    reviewRounds: 2,
+    mergeInstructions: '请综合评审',
+    tasks: [{ id: 'r1', prompt: 'a' }],
+  }, { id: 'a1' })
+
+  assert.equal(res.runs.length, 3, '1 任务 + 2 轮评审')
+  assert.deepEqual(res.runs.map((r) => r.id), ['r1', 'supervisor', 'supervisor'])
+  assert.deepEqual(res.runs.map((r) => r.label), ['', 'supervisor#1', 'supervisor#2'])
+  // 第二轮 prompt 携带第一轮输出
+  const round2Prompt = ctx.subagentCalls[2].request.prompt[0].text
+  assert.ok(round2Prompt.indexOf('OUT:supervisor#1') >= 0, '第二轮以上一轮输出为上下文')
+})
+
+test('Phase2 map-reduce：并行执行 + 归约任务', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'map-reduce',
+    mergeInstructions: '归纳为结论',
+    tasks: [{ id: 'm1', prompt: 'x' }, { id: 'm2', prompt: 'y' }],
+  }, { id: 'a1' })
+
+  assert.equal(res.runs.length, 3)
+  assert.equal(res.runs[2].id, 'reduce')
+  assert.equal(ctx.subagentCalls[2].request.label, 'reduce')
+  assert.ok(res.summary.indexOf('OUT:reduce') >= 0, '汇总来自归约任务')
+})
+
+test('Phase2 router：从候选任务中路由选择一项执行', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'router',
+    tasks: [{ id: 'opt1', prompt: '方案 A' }, { id: 'opt2', prompt: '方案 B' }],
+  }, { id: 'a1' })
+
+  assert.equal(ctx.subagentCalls.length, 1, 'router 只执行一次')
+  assert.equal(ctx.subagentCalls[0].request.label, 'router')
+  assert.equal(res.runs.length, 1)
+  const prompt = ctx.subagentCalls[0].request.prompt[0].text
+  assert.ok(prompt.indexOf('方案 A') >= 0 && prompt.indexOf('方案 B') >= 0, '候选任务进入路由 prompt')
+  assert.ok(res.summary.indexOf('OUT:router') >= 0)
+})
+
+test('Phase2 配方：保存/列出/执行/删除', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  // 保存配方
+  const saved = await rpc.orchSavePreset({
+    name: 'audit',
+    mode: 'pipeline',
+    tasks: [{ id: 's1', prompt: 'step1' }, { id: 's2', prompt: 'step2' }],
+    mergeInstructions: '',
+  })
+  assert.equal(saved.presets.length, 1)
+  assert.equal(saved.presets[0].name, 'audit')
+
+  // 按配方执行（不传 tasks）
+  const res = await toolExec(ctx, 'orchestrate', { mode: 'pipeline', preset: 'audit' }, { id: 'a1' })
+  assert.equal(res.runs.length, 2)
+  assert.deepEqual(res.runs.map((r) => r.id), ['s1', 's2'])
+
+  // 删除
+  const after = await rpc.orchDeletePreset({ name: 'audit' })
+  assert.equal(after.presets.length, 0)
+
+  // 未知配方报错
+  await assert.rejects(toolExec(ctx, 'orchestrate', { preset: 'nope', tasks: [{ id: 'x', prompt: 'p' }] }, { id: 'a1' }), /nope/)
+})
+
+test('Phase2 resume：中断的 pipeline 按 runId 恢复未完成阶段', async () => {
+  const { ctx, subagentFailures } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  // 第一次执行：stage2 永久失败 -> run 记录留痕
+  subagentFailures.set('st2', 99)
+  const first = await toolExec(ctx, 'orchestrate', {
+    mode: 'pipeline',
+    tasks: [{ id: 'st1', prompt: 'a' }, { id: 'st2', prompt: 'b' }, { id: 'st3', prompt: 'c' }],
+  }, { id: 'a1' })
+  assert.equal(first.runs[1].status, 'error')
+  const { runs } = await rpc.orchRuns()
+  const failedRunId = runs[0].runId
+
+  // 修复后恢复：只跑未完成阶段，已完成 st1 复用
+  subagentFailures.delete('st2')
+  const resumed = await toolExec(ctx, 'orchestrate', { mode: 'pipeline', resume: failedRunId }, { id: 'a1' })
+  assert.equal(resumed.runs.length, 3, '恢复后包含已完成 + 新完成阶段')
+  assert.deepEqual(resumed.runs.map((r) => r.status), ['completed', 'completed', 'completed'])
+  assert.ok(resumed.runs[0].output.indexOf('OUT:st1') >= 0, 'st1 输出来自原记录')
+  // 恢复的 run 记录带 resumedFrom
+  const resumedRuns = await rpc.orchRuns()
+  assert.equal(resumedRuns.runs[0].resumedFrom, failedRunId)
+  // 只重跑了 st2/st3（st1 复用；首次调用 = st1,st2 两条）
+  const resumedLabels = ctx.subagentCalls.slice(2).map((c) => c.request.label)
+  assert.deepEqual(resumedLabels, ['st2', 'st3'])
+})
+
+test('Phase2 全局并发：globalConcurrency=1 时跨 run 串行', async () => {
+  const { ctx, state } = makeEnv()
+  state.subagentDelay = 40
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { orch: { globalConcurrency: 1 } } })
+
+  // 两个编排并行发起（每个 run 一个任务，观测跨 run 串行）
+  const p1 = toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'g1', prompt: 'a' }] }, { id: 'a1' })
+  const p2 = toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'g2', prompt: 'b' }] }, { id: 'a1' })
+  await Promise.all([p1, p2])
+
+  assert.equal(ctx.maxActiveSubagents, 1, '全局并发上限 1：跨 run 串行')
+  assert.equal(ctx.subagentCalls.length, 2)
+})
+
+test('Phase2 /orchestrate presets：命令列出配方', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.orchSavePreset({ name: 'audit', mode: 'fanout', tasks: [{ id: 'x', prompt: 'p' }] })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const def = ctx.commandDefs.find((d) => d.name === 'orchestrate')
+  const res = await def.handler({ input: 'presets' })
+  assert.equal(res.kind, 'success')
+  assert.ok(res.text.indexOf('audit') >= 0, '列表含配方名')
 })
