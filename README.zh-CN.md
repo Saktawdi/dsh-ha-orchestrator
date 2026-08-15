@@ -2,7 +2,7 @@
 
 # HA Orchestrator
 
-[![Version](https://img.shields.io/badge/version-v0.2.0-4d6bfe?style=flat-square)](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.2.0)
+[![Version](https://img.shields.io/badge/version-v0.2.1-4d6bfe?style=flat-square)](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.2.1)
 [![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square)](https://github.com/deepseek-ai/dsh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
@@ -35,6 +35,8 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 - `supervisor` — 并行执行子任务后，由监督子智能体审查合并。
 
 如果某次没有自动编排，直接说"用编排"即可。
+
+> 注意：如果当前会话使用 `minimal` / `minimal-v3` 这类 `complete: true` 人设预设，平台会按设计丢弃插件注入的系统提示词段落；此时自动触发仅靠 `orchestrate` 工具描述承载。插件已把“阅读大型项目”等触发条件写进工具描述，但若仍不触发，请直接说“用编排”。
 
 不想让模型自动调用的话，可以在 设置 →「HA 与编排」→「系统」卡片里关掉**上下文注入**；之后在提示词里写"使用 ha-orchestrator 插件进行调用"即可手动触发。
 
@@ -96,7 +98,7 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 3. 安装后插件随 DSH 启动自动加载，重启后依然生效。
 
-> **版本说明：** [v0.1.0](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.1.0) 是上一代动态版（经 `cordis_define` 按会话加载），仅作功能预览；从 v0.2.0 起为静态插件，随 DSH 启动自动加载，本 README 描述的是 v0.2.0 及之后的版本。
+> **版本说明：** [v0.1.0](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.1.0) 是上一代动态版（经 `cordis_define` 按会话加载），仅作功能预览；从 v0.2.0 起为静态插件，随 DSH 启动自动加载，本 README 描述的是 v0.2.1 及之后的版本。
 
 ## 用法
 
@@ -105,6 +107,9 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 ```
 你:    帮我调研这三个开源项目，比较许可证和社区活跃度，给出选型建议。
 模型:  识别出 3 个独立子任务 → 自动调用 orchestrate（fanout）→ 并行调研 → 汇总对比 → 给出建议
+
+你:    阅读下这个大型项目，梳理整体架构和当前进度。
+模型:  按模块/文档/代码拆成多个独立阅读子任务 → 自动调用 orchestrate（fanout）→ 并行阅读 → 汇总架构与进度
 
 你:    先做需求分析，再写设计文档，最后写实现计划。
 模型:  自动调用 orchestrate（pipeline）→ 每阶段输出自动成为下一阶段输入
@@ -122,7 +127,7 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 | 模型高可用 | 开关、备用模型列表、冷却时间、失败阈值、错误码过滤、隔离模型与切换历史 |
 | 子智能体编排 | 开关、子智能体提供方、默认并发数、单次任务子智能体上限 |
 | 自定义子智能体 | 增删改、排序；「智能新增」用 AI 生成 |
-| 系统 | 插件语言（跟随系统 / 中文 / English）、编排引导开关、调试卡片开关 |
+| 系统 | 插件语言（跟随系统 / 中文 / English）、编排引导开关、注入状态、调试卡片开关 |
 
 ## 注意事项
 

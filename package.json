@@ -1,6 +1,6 @@
 {
   "name": "ha-orchestrator",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Model high-availability failover + subagent orchestration (fanout/pipeline/supervisor) for DeepSeek Harness",
   "type": "module",
   "main": "lib/index.js",

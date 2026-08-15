@@ -2,7 +2,7 @@
 
 # HA Orchestrator
 
-[![Version](https://img.shields.io/badge/version-v0.2.0-4d6bfe?style=flat-square)](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.2.0)
+[![Version](https://img.shields.io/badge/version-v0.2.1-4d6bfe?style=flat-square)](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.2.1)
 [![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square)](https://github.com/deepseek-ai/dsh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
@@ -35,6 +35,8 @@ The `orchestrate` tool is available in every session. Its description and a hint
 - `supervisor` — run subtasks in parallel, then let a supervising subagent review and merge them.
 
 If a particular run does not orchestrate on its own, just say "use orchestration".
+
+> Note: if the current session uses a `complete: true` persona preset such as `minimal` / `minimal-v3`, the platform intentionally drops plugin system-prompt sections; auto-triggering then relies on the `orchestrate` tool description alone. The plugin now includes "read a large project" in that description, but if it still does not trigger, just say "use orchestration".
 
 You can also turn off the auto-triggering: in Settings → "HA 与编排" → System card, turn off **context injection**. The model then only orchestrates when you ask for it, for example "use the ha-orchestrator plugin".
 
@@ -106,6 +108,9 @@ No special commands. The model decides when to orchestrate:
 You:    Research these three open-source projects, compare licenses and community activity, and recommend one.
 Model:  sees 3 independent subtasks → calls orchestrate (fanout) → parallel research → comparison → recommendation
 
+You:    Read this large project and summarize its architecture and current progress.
+Model:  splits it into independent per-module/doc/code reading tasks → calls orchestrate (fanout) → parallel reads → consolidated architecture and progress
+
 You:    Do requirements analysis first, then a design doc, then an implementation plan.
 Model:  calls orchestrate (pipeline) → each stage's output feeds the next
 
@@ -122,7 +127,7 @@ Settings → "HA 与编排":
 | Model High Availability | On/off, backup list, cooldown, failure threshold, error-code filter, quarantined models and failover history |
 | Subagent Orchestration | On/off, subagent provider, default concurrency, max subagents per run |
 | Custom Subagents | Add, edit, reorder, delete; "AI Generate" creates one from a description |
-| System | Plugin language (follow system / Chinese / English), the orchestration hint toggle, and the debug card toggle |
+| System | Plugin language (follow system / Chinese / English), the orchestration hint toggle, the live injection status, and the debug card toggle |
 
 ## Notes
 
