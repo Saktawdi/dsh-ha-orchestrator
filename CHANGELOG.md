@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0] - 2026-08-15
+
+### Added
+- 路线图 Phase 2（编排能力产品化）核心项落地：
+  - **run 持久化**：每次 `orchestrate` 调用生成 `runId`，任务定义/子任务输出/状态/耗时/中止标记落盘 `ha-orchestrator.runs.jsonl`（JSONL 追加写，磁盘保留最近 200 条、内存 50 条）；失败调用同样留痕；
+  - **实时进度事件**：`orch/run-start`、`orch/task-status`（running/completed/error）、`orch/run-end`（含 summary/runs/aborted/durationMs）；
+  - **`/orchestrate` 命令**：`/orchestrate runs` 最近运行列表、`/orchestrate show <runId>` 详情（每任务状态+输出+汇总）；RPC `orchRuns` 供 UI Run 面板轮询；
+  - **pipeline 阶段失败隔离**：单阶段失败按 `orch.stageRetry`（0–5，默认 0）重试，仍失败则标记 `error` 保留原因、中止后续阶段，调用不再整体失败（汇总含失败说明）；
+  - **fanout 可选合并**：`mergeInstructions` 存在时追加一次合成任务（`merge`），输出作为最终汇总；
+  - 设置页新增「流水线阶段重试」配置项。
+
 ## [0.4.0] - 2026-08-15
 
 ### Added

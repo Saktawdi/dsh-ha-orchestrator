@@ -192,33 +192,32 @@ ha-orchestrator/
   - 层级已明确并实现：本插件监听器 `prepend: true` 位于瀑布流最外层——阈值内抖动由本插件带退避重试；预算耗尽 `next()` 放行给官方 `llm-retry`；逃逸失败再进熔断/回退。
   - 待补：README/文档中写出该层级说明与组合配置建议（随 Phase 4 文档体系落地）。
 
-### Phase 2：编排能力产品化（建议 3–4 周）
+### Phase 2：编排能力产品化（建议 3–4 周，核心项已完成，进行中）
 
 目标：保留“轻量”，但让 run 可观察、可恢复、可复用。
 
-- [ ] **run 持久化**：
-  - 每次 `orchestrate` 调用生成 `runId`，把任务定义、每个子代理输出、状态、耗时、成本写入 `.dsh/ha-orchestrator/runs/` 或 storageDomain；
-  - 支持 `/orchestrate runs`、`/orchestrate show <runId>`。
-- [ ] **实时进度**：
-  - 通过 session events 或 RPC 暴露“每个子任务 running/completed/failed”；
-  - 设置页或对话流增加轻量 Run 面板，不必做完整团队 UI。
-- [ ] **任务级失败隔离**：
+- [x] **run 持久化**：
+  - 每次 `orchestrate` 调用生成 `runId`，任务定义、每个子代理输出、状态、耗时、中止标记写入 `ha-orchestrator.runs.jsonl`（与配置同目录；JSONL 追加写，磁盘保留 200 条、内存 50 条）；失败调用同样留痕（v0.5.0）；
+  - `/orchestrate runs`、`/orchestrate show <runId>` 已落地（v0.5.0）。
+- [x] **实时进度**：
+  - 类型化会话事件 `orch/run-start` / `orch/task-status`（running/completed/error）/ `orch/run-end`（v0.5.0）；
+  - RPC `orchRuns` 暴露最近 run（内存）；设置页轻量 Run 面板待 Phase 3 UI 落地。
+- [x] **任务级失败隔离**：
   - `fanout` / `supervisor` 已通过 `poolRun` 对每个子任务逐个 `try/catch` 并标记 `status='error'` 保留失败原因，默认不整体失败（已落地并有单测覆盖）；
-  - 真正的缺口是 `pipeline` 单阶段失败策略：当前任一阶段抛错即让整个 `orchestrate` 调用失败（无单阶段隔离），需补齐“失败重试 N 次”预算与单阶段降级，并校验汇总语义。
+  - `pipeline` 单阶段失败策略已补齐：`orch.stageRetry`（0–5，默认 0）重试预算 + 单阶段降级（失败标记 error、中止后续阶段、调用不整体失败、汇总含失败说明）（v0.5.0）。
 - [ ] **并发与预算**：
   - 全局并发/单 run 并发分开（当前仅单 run 并发：`concurrency` 参数，上限 `maxAgents`，clamp 1..32/1..64）；
-  - token/agent 预算硬限制，防止失控；
-  - 可选的“预算用尽后暂停，人工确认继续”。
+  - token/agent 预算硬限制与“预算用尽后暂停，人工确认继续”待补。
 - [ ] **模式增强**：
-  - `fanout` 支持可选合并提示词（当前 `mergeInstructions` 仅 supervisor 使用）；
-  - `pipeline` 支持“结构化中间产物”而不是纯文本拼接（当前为 `appendPipelineCarry` 纯文本 carry）；
-  - `supervisor` 支持多个评审者或评审轮次；
-  - 增加 `map-reduce` / `router` 作为可选 pattern（参考 meta-orchestrator 的五种 pattern，但保持工具简单）。
+  - `fanout` 支持可选合并提示词：✅ 已落地（`mergeInstructions` 触发合成任务）（v0.5.0）；
+  - `pipeline` 支持“结构化中间产物”而不是纯文本拼接（当前为 `appendPipelineCarry` 纯文本 carry）待补；
+  - `supervisor` 支持多个评审者或评审轮次待补；
+  - 增加 `map-reduce` / `router` 作为可选 pattern 待补。
 - [ ] **复用**：
-  - 支持把一次成功的 orchestrate 调用保存为“预设/配方”，下次按名调用（可参考 `dsh_workflow` 的保存/发现，但只做轻量版）。
+  - 支持把一次成功的 orchestrate 调用保存为“预设/配方”，下次按名调用（可参考 `dsh_workflow` 的保存/发现，但只做轻量版）待补。
 - [ ] **取消与恢复**：
   - 取消语义已基本闭环：`runOne` 强制要求真实 `AbortSignal`（缺失直接拒绝）、`poolRun` 透传、`pipeline` 循环检查 `signal.aborted`、`run.dispose()` 在 finally 回收；
-  - 剩余：支持中断后按 runId 恢复未完成子任务（轻量 effect cache）。
+  - 剩余：支持中断后按 runId 恢复未完成子任务（轻量 effect cache）待补。
 
 ### Phase 3：UI / 产品体验（建议 2–3 周）
 

@@ -56,6 +56,8 @@ export interface OrchConfig {
   concurrency: number
   maxAgents: number
   agents: AgentEntry[]
+  /** pipeline 单阶段失败重试次数（0 = 不重试，直接隔离该阶段）。 */
+  stageRetry: number
 }
 
 /** 调试配置节。 */
@@ -112,6 +114,8 @@ export const defaultConfig: Config = {
     provider: '',
     concurrency: 3,
     maxAgents: 8,
+    // pipeline 阶段失败默认不重试：失败阶段标记 error 并中止后续阶段（阶段隔离）
+    stageRetry: 0,
     agents: [
       {
         name: 'reviewer',
@@ -194,6 +198,7 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
       orch.provider = asString(orch.provider)
       orch.concurrency = Math.max(1, Math.min(32, Number(orch.concurrency) || 1))
       orch.maxAgents = Math.max(1, Math.min(64, Number(orch.maxAgents) || 1))
+      orch.stageRetry = Math.max(0, Math.min(5, Number(orch.stageRetry) || 0))
       orch.agents = Array.isArray(orch.agents)
         ? orch.agents.filter((a: AgentEntry | RawSection) => !!a && typeof a === 'object' && String(a.name || '').trim())
           .map((a: AgentEntry | RawSection) => ({

@@ -91,6 +91,7 @@ function makeEnv() {
   const fs = makeFs()
   const state = { locale: 'zh', probeMode: 'ok' }
   const subagentOutputs = new Map() // label -> 输出文本
+  const subagentFailures = new Map() // label -> 剩余失败次数（>0 时 start 抛错）
   const ctx = new FakeCtx()
   const fakeAgent = {
     id: 'a1',
@@ -102,9 +103,15 @@ function makeEnv() {
     list: () => ['provider-a'],
     async start(provider, request) {
       ctx.subagentCalls.push({ provider, request })
-      const text = subagentOutputs.has(request.label)
-        ? subagentOutputs.get(request.label)
-        : 'OUT:' + request.label
+      const label = request.label
+      const remaining = subagentFailures.get(label) || 0
+      if (remaining > 0) {
+        subagentFailures.set(label, remaining - 1)
+        throw new Error('subagent upstream failure: ' + label)
+      }
+      const text = subagentOutputs.has(label)
+        ? subagentOutputs.get(label)
+        : 'OUT:' + label
       return {
         result: Promise.resolve({
           stopReason: 'completed',
@@ -151,7 +158,7 @@ function makeEnv() {
     },
   }
   for (const [name, impl] of Object.entries(services)) ctx._services.set(name, impl)
-  return { ctx, fs, state, subagents, subagentOutputs, fakeAgent }
+  return { ctx, fs, state, subagents, subagentOutputs, subagentFailures, fakeAgent }
 }
 
 // ---------- 工具函数 ----------
@@ -709,4 +716,171 @@ test('Phase1 haStatus：隔离层级 / 失败计数 / 游标 / 探测记录齐�
   assert.equal(status.cursors.length, 1)
   assert.equal(status.cursors[0].retries, 2)
   assert.ok(Array.isArray(status.probes.last))
+})
+
+// ===================== Phase 2：编排能力产品化集成测试 =====================
+
+test('Phase2 run 记录：orchestrate 生成 runId 并落盘（JSONL）', async () => {
+  const { ctx, fs } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'P1' }, { id: 't2', prompt: 'P2' }],
+  }, { id: 'a1' })
+
+  // 内存记录
+  const { runs } = await rpc.orchRuns()
+  assert.equal(runs.length, 1)
+  const rec = runs[0]
+  assert.ok(/^r-/.test(rec.runId), 'runId 格式: ' + rec.runId)
+  assert.equal(rec.mode, 'fanout')
+  assert.equal(rec.agent, 'a1')
+  assert.equal(rec.runs.length, 2)
+  assert.equal(rec.aborted, false)
+  assert.ok(rec.durationMs >= 0)
+  assert.ok(rec.startedAt && rec.finishedAt)
+  assert.equal(rec.summary, res.summary)
+
+  // 磁盘 JSONL（等防抖无关——run 立即写盘）
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  const file = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.runs.jsonl') >= 0)
+  assert.ok(file, 'run 文件已写入')
+  const lines = fs.store.get(file).trim().split(/\r?\n/)
+  assert.equal(lines.length, 1)
+  const parsed = JSON.parse(lines[0])
+  assert.equal(parsed.runId, rec.runId)
+  assert.equal(parsed.runs.length, 2)
+})
+
+test('Phase2 实时进度事件：run-start / task-status / run-end', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 'e1', prompt: 'P1' }, { id: 'e2', prompt: 'P2' }],
+  }, { id: 'a1' })
+
+  const names = ctx.events.map((e) => e.name)
+  assert.ok(names.indexOf('orch/run-start') >= 0, '含 run-start: ' + names.join(','))
+  assert.ok(names.indexOf('orch/task-status') >= 0, '含 task-status')
+  assert.ok(names.indexOf('orch/run-end') >= 0, '含 run-end')
+
+  const start = ctx.events.find((e) => e.name === 'orch/run-start')
+  assert.ok(start.payload.runId)
+  assert.equal(start.payload.mode, 'fanout')
+  assert.equal(start.payload.tasks.length, 2)
+
+  const statuses = ctx.events.filter((e) => e.name === 'orch/task-status')
+  // 每个任务 running + completed
+  const completed = statuses.filter((e) => e.payload.status === 'completed')
+  assert.equal(completed.length, 2)
+  assert.deepEqual(completed.map((e) => e.payload.label).sort(), ['e1', 'e2'])
+
+  const end = ctx.events.find((e) => e.name === 'orch/run-end')
+  assert.equal(end.payload.runId, start.payload.runId)
+  assert.equal(end.payload.runs.length, 2)
+  assert.equal(end.payload.aborted, false)
+})
+
+test('Phase2 pipeline 阶段隔离：失败阶段标记 error，后续阶段不执行，调用不抛错', async () => {
+  const { ctx, subagentFailures } = makeEnv()
+  await mountPlugin(ctx)
+
+  // p2 阶段永久失败
+  subagentFailures.set('p2', 99)
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'pipeline',
+    tasks: [{ id: 'p1', prompt: 'first' }, { id: 'p2', prompt: 'second' }, { id: 'p3', prompt: 'third' }],
+  }, { id: 'a1' })
+
+  assert.equal(res.runs.length, 2, '失败阶段中止后续阶段')
+  assert.equal(res.runs[0].status, 'completed')
+  assert.equal(res.runs[1].status, 'error')
+  assert.ok(res.runs[1].output.indexOf('subagent upstream failure: p2') >= 0, '保留失败原因')
+  assert.ok(res.summary.length > 0, '汇总仍返回（不整体失败）')
+  // p3 未启动
+  assert.equal(ctx.subagentCalls.length, 2)
+})
+
+test('Phase2 pipeline 阶段重试：stageRetry=1 时失败一次后重试成功', async () => {
+  const { ctx, subagentFailures } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { orch: { stageRetry: 1 } } })
+
+  // q2 第一次失败，之后成功
+  subagentFailures.set('q2', 1)
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'pipeline',
+    tasks: [{ id: 'q1', prompt: 'a' }, { id: 'q2', prompt: 'b' }, { id: 'q3', prompt: 'c' }],
+  }, { id: 'a1' })
+
+  assert.deepEqual(res.runs.map((r) => r.status), ['completed', 'completed', 'completed'])
+  assert.equal(ctx.subagentCalls.length, 4, 'q2 重试一次（q1,q2,q2,q3）')
+  assert.equal(ctx.subagentCalls[2].request.label, 'q2')
+})
+
+test('Phase2 fanout 合并：mergeInstructions 触发合成任务', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    mergeInstructions: '请总结',
+    tasks: [{ id: 'm1', prompt: 'a' }, { id: 'm2', prompt: 'b' }],
+  }, { id: 'a1' })
+
+  assert.equal(res.runs.length, 3, '含 merge 合成 run')
+  assert.equal(res.runs[2].id, 'merge')
+  const mergeCall = ctx.subagentCalls[2].request
+  assert.equal(mergeCall.label, 'merge')
+  assert.ok(mergeCall.prompt[0].text.indexOf('请总结') >= 0, 'merge prompt 含合并说明')
+})
+
+test('Phase2 /orchestrate 命令：runs 列表与 show 详情', async () => {
+  const { ctx, fs } = makeEnv()
+  await mountPlugin(ctx)
+
+  await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'c1', prompt: 'x' }] }, { id: 'a1' })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const def = ctx.commandDefs.find((d) => d.name === 'orchestrate')
+  assert.ok(def, '/orchestrate 命令已注册')
+
+  // runs 列表
+  const listRes = await def.handler({ input: 'runs' })
+  assert.equal(listRes.kind, 'success')
+  assert.ok(listRes.text.indexOf('r-') >= 0, '列表含 runId')
+
+  // show 详情
+  const runId = listRes.text.match(/r-[a-z0-9-]+/)[0]
+  const showRes = await def.handler({ input: 'show ' + runId })
+  assert.equal(showRes.kind, 'success')
+  assert.ok(showRes.text.indexOf(runId) >= 0)
+  assert.ok(showRes.text.indexOf('fanout') >= 0)
+
+  // 未知 runId
+  const missing = await def.handler({ input: 'show r-none' })
+  assert.equal(missing.kind, 'error')
+})
+
+test('Phase2 失败留痕：未知 agent 报错也生成 run 记录', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  await assert.rejects(
+    toolExec(ctx, 'orchestrate', { mode: 'fanout', agent: 'ghost', tasks: [{ id: 't1', prompt: 'P' }] }, { id: 'a1' }),
+    /ghost/,
+  )
+
+  const { runs } = await rpc.orchRuns()
+  assert.equal(runs.length, 1, '失败调用也留痕')
+  assert.ok(runs[0].summary.indexOf('ghost') >= 0, 'summary 记录失败原因')
+  assert.equal(runs[0].runs.length, 0)
 })

@@ -144,6 +144,22 @@ interface StateSnapshot {
   ctxInject: InjectionStatus
 }
 
+/** run 持久化记录（每次 orchestrate 调用一条）。 */
+interface RunRecord {
+  runId: string
+  mode: 'fanout' | 'pipeline' | 'supervisor'
+  agent: string
+  provider: string
+  concurrency: number
+  startedAt: string
+  finishedAt?: string
+  durationMs?: number
+  aborted: boolean
+  tasks: Array<{ id: string; label: string; agent: string }>
+  runs: RunResultLike[]
+  summary: string
+}
+
 async function apply(ctx: Context): Promise<void> {
   // ================= 配置与状态 =================
   const state: {
@@ -154,11 +170,13 @@ async function apply(ctx: Context): Promise<void> {
     history: HaState['history']
     debugLogs: DebugLogEntry[]
     probeLog: Array<{ at: string; key: string; ok: boolean; reason?: string }>
+    runs: RunRecord[]
   } = {
     config: JSON.parse(JSON.stringify(defaultConfig)) as Config,
     ...createHaState(),
     debugLogs: [],
     probeLog: [],
+    runs: [],
   }
   let providerCache: Set<string> | null = null
   let providerCacheAt = 0
@@ -175,6 +193,10 @@ async function apply(ctx: Context): Promise<void> {
   // 探测失败后的重试间隔：不短于冷却、封顶 5 分钟，避免无限增长
   const PROBE_RETRY_MIN_MS = 60 * 1000
   const PROBE_RETRY_MAX_MS = 5 * 60 * 1000
+  // run 持久化：JSONL 追加写，内存保留最近 RUN_MEM_CAP 条，磁盘保留 RUN_FILE_CAP 条
+  const RUNS_FILE = 'ha-orchestrator.runs.jsonl'
+  const RUN_MEM_CAP = 50
+  const RUN_FILE_CAP = 200
 
   // ================= 语言系统 =================
   // 语言包位于插件包根目录 `.language/`（zh.json / en.json），键集以 zh.json 为基准。
@@ -393,6 +415,66 @@ async function apply(ctx: Context): Promise<void> {
     if (haStateLoaded) return
     haStateLoaded = true
     try { await loadPersistedHaState() } catch (e) { console.error('[ha] load persisted HA state failed', e) }
+  }
+  // ---- run 持久化（JSONL，追加写 + 容量修剪） ----
+  // 每次 orchestrate 调用生成 runId，结束（含中止/异常）后落盘一条记录；
+  // 磁盘只保留最近 RUN_FILE_CAP 条，内存只保留最近 RUN_MEM_CAP 条。
+  async function writeStorageText(name: string, text: string): Promise<boolean> {
+    const dirs = activeStorageDir ? [activeStorageDir] : storageDirs()
+    if (dirs.length === 0) return writeStorageTextIn('', name, text)
+    for (const dir of dirs) {
+      if (await writeStorageTextIn(dir, name, text)) return true
+    }
+    return false
+  }
+  async function writeStorageTextIn(dir: string | null, name: string, text: string): Promise<boolean> {
+    const fsService = fsServiceNow()
+    const target = await resolveStorageTargetIn(dir, name)
+    if (!target || !fsService || typeof fsService.writeText !== 'function') return false
+    try { await fsService.writeText(target, text); return true } catch (e) { return false }
+  }
+  function newRunId(): string {
+    return 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+  }
+  function emitOrchEvent(name: string, payload: Record<string, unknown>): void {
+    try {
+      ;(ctx.emit as (n: string, p: unknown) => unknown)(name, payload)
+    } catch (e) { /* 监听器抛错不影响主流程 */ }
+  }
+  // 读取磁盘上的 run 记录列表（JSONL，最新在前）
+  async function readRunsFromDisk(): Promise<RunRecord[]> {
+    try {
+      const text = await readStorageText(RUNS_FILE)
+      if (text == null) return []
+      const out: RunRecord[] = []
+      for (const line of String(text).split(/\r?\n/)) {
+        if (!line.trim()) continue
+        try {
+          const rec = JSON.parse(line) as RunRecord
+          if (rec && rec.runId) out.push(rec)
+        } catch (e) { /* 跳过损坏行 */ }
+      }
+      return out.reverse()
+    } catch (e) {
+      return []
+    }
+  }
+  // 落盘一条 run 记录（读-追加-修剪-写）
+  async function persistRun(rec: RunRecord): Promise<void> {
+    try {
+      const existing = await readRunsFromDisk()
+      const all = existing.concat([rec]).slice(0, RUN_FILE_CAP)
+      const text = all.map((r) => JSON.stringify(r)).join('\n') + '\n'
+      await writeStorageText(RUNS_FILE, text)
+    } catch (e) {
+      console.error('[ha] persist run failed', e)
+    }
+  }
+  // 记录 run 到内存 + 落盘（run 结束时调用）
+  function recordRun(rec: RunRecord): void {
+    state.runs.unshift(rec)
+    if (state.runs.length > RUN_MEM_CAP) state.runs.splice(RUN_MEM_CAP)
+    void persistRun(rec)
   }
   // ---- 类型化会话事件（可观测性） ----
   // ha/failover、ha/circuit-opened、ha/circuit-closed、ha/probe、ha/state-restored。
@@ -962,11 +1044,13 @@ async function apply(ctx: Context): Promise<void> {
     parent: unknown,
     signal: AbortSignal,
     agentDef: AgentDefLike | null,
+    runId = '',
   ): Promise<RunResultLike> {
     if (!signal) throw new Error('runOne: 缺少取消信号（signal），子智能体提供方需要真实 AbortSignal')
     const runLabel = String(task.label || task.id || 'task')
     const agentName = agentDef ? String(agentDef.name) : ''
     debugLog('debug', 'orch.task.start', '子智能体任务开始', { label: runLabel, agent: agentName, provider })
+    if (runId) emitOrchEvent('orch/task-status', { runId, taskId: String(task.id || ''), label: runLabel, status: 'running', at: new Date().toISOString() })
     const request = buildSubagentRequest(task, extra, agentDef, t('orch.mergedPrefix'), parent, signal)
     const run: SubagentRun = await subagents.start(provider, request)
     try {
@@ -974,9 +1058,11 @@ async function apply(ctx: Context): Promise<void> {
       const status = String(res.stopReason || 'completed')
       const text = (res.output || []).filter((b): b is { type: string; text: string } => !!(b && b.type === 'text')).map((b) => b.text).join('\n')
       debugLog('debug', 'orch.task.end', '子智能体任务结束', { label: runLabel, agent: agentName, status, outputChars: text.length })
+      if (runId) emitOrchEvent('orch/task-status', { runId, taskId: String(task.id || ''), label: runLabel, status, at: new Date().toISOString() })
       return normalizeRunResult(task, agentDef, res)
     } catch (e) {
       debugLog('error', 'orch.task.error', '子智能体任务失败', { label: runLabel, agent: agentName, message: String((e && (e as Error).message) || e) })
+      if (runId) emitOrchEvent('orch/task-status', { runId, taskId: String(task.id || ''), label: runLabel, status: 'error', at: new Date().toISOString() })
       throw e
     } finally {
       await run.dispose()
@@ -1047,6 +1133,9 @@ async function apply(ctx: Context): Promise<void> {
         },
       },
       async execute(args, exec) {
+        const runId = newRunId()
+        const startedAt = new Date().toISOString()
+        const startedMs = Date.now()
         try {
           const cfg = state.config.orch
           if (!cfg.enabled) throw new Error(t('orch.errDisabled'))
@@ -1069,36 +1158,116 @@ async function apply(ctx: Context): Promise<void> {
             available: availableNames.join(', ') || t('common.none'),
           }))
           const defFor = (tk: { agent?: string }): AgentDefLike | null => resolveAgentDef(tk && tk.agent) || defaultDef
-          const worker = (task: TaskLike, i: number): Promise<RunResultLike> => runOne(subagents, provider, task, '', parent, signal, defFor(task))
+          const worker = (task: TaskLike, i: number): Promise<RunResultLike> => runOne(subagents, provider, task, '', parent, signal, defFor(task), runId)
           debugLog('info', 'orch.start', 'orchestrate 调用', { agent: String(exec.agent.id || ''), mode, tasks: tasks.length, concurrency, provider, defaultAgent: args.agent || '' })
+          emitOrchEvent('orch/run-start', { runId, mode, agent: String(exec.agent.id || ''), tasks: tasks.map((tk) => ({ id: tk.id || '', label: tk.label || '' })), at: startedAt })
           let runs: RunResultLike[] = []
           let summary = ''
           if (mode === 'pipeline') {
+            // pipeline 阶段隔离：单阶段失败按 stageRetry 重试，仍失败则标记 error 并中止后续阶段
+            const stageRetry = Math.max(0, Math.min(5, Number(cfg.stageRetry) || 0))
             let carry = ''
+            let stageFailed = ''
             for (let i = 0; i < tasks.length; i += 1) {
               if (signal.aborted) break
-              const r = await runOne(subagents, provider, tasks[i], carry, parent, signal, defFor(tasks[i]))
+              let r: RunResultLike | null = null
+              let attempt = 0
+              while (true) {
+                try {
+                  r = await runOne(subagents, provider, tasks[i], carry, parent, signal, defFor(tasks[i]), runId)
+                  break
+                } catch (e) {
+                  attempt += 1
+                  if (attempt > stageRetry) {
+                    stageFailed = String((e && (e as Error).message) || e)
+                    const stageDef = defFor(tasks[i])
+                    r = {
+                      id: String(tasks[i].id || tasks[i].label || 'task'),
+                      label: String(tasks[i].label || ''),
+                      agent: (stageDef && stageDef.name) || '',
+                      status: 'error',
+                      output: stageFailed,
+                    }
+                    break
+                  }
+                  debugLog('warn', 'orch.pipeline.retry', 'pipeline 阶段重试', { task: tasks[i].id || tasks[i].label, attempt })
+                }
+              }
               runs.push(r)
+              if (r.status === 'error') break
               carry = appendPipelineCarry(carry, r.output || '')
             }
-            summary = t('orch.sumPipeline', { out: carry || t('orch.sumNoOutput') })
+            summary = stageFailed
+              ? t('orch.sumPipelineFailed', { out: carry || t('orch.sumNoOutput'), reason: stageFailed })
+              : t('orch.sumPipeline', { out: carry || t('orch.sumNoOutput') })
           } else if (mode === 'supervisor') {
             runs = await poolRun(tasks, concurrency, worker)
             const merged = summarize(runs)
             const instruction = String(args.mergeInstructions || t('orch.mergeDefault'))
             const supDef = resolveAgentDef(args.supervisorAgent) || defaultDef
             const supPrompt = buildSupervisorPrompt(instruction, merged, t('orch.outputSeparator'))
-            const sup = await runOne(subagents, provider, { id: 'supervisor', label: 'supervisor', prompt: supPrompt }, '', parent, signal, supDef)
+            const sup = await runOne(subagents, provider, { id: 'supervisor', label: 'supervisor', prompt: supPrompt }, '', parent, signal, supDef, runId)
             summary = t('orch.sumSupervisor', { out: sup.output || t('orch.sumNoOutput') })
           } else {
             runs = await poolRun(tasks, concurrency, worker)
-            summary = summarize(runs)
+            // fanout 可选合并：mergeInstructions 存在时追加一次合成任务
+            if (args.mergeInstructions) {
+              const merged = summarize(runs)
+              const instruction = String(args.mergeInstructions)
+              const mergePrompt = buildSupervisorPrompt(instruction, merged, t('orch.outputSeparator'))
+              const mr = await runOne(subagents, provider, { id: 'merge', label: 'merge', prompt: mergePrompt }, '', parent, signal, defaultDef, runId)
+              runs = runs.concat([mr])
+              summary = t('orch.sumMerged', { out: mr.output || t('orch.sumNoOutput') })
+            } else {
+              summary = summarize(runs)
+            }
           }
           const finalRuns = normalizeFinalRuns(runs)
           debugLog('info', 'orch.done', 'orchestrate 完成', { mode, runs: finalRuns.length, aborted: signal.aborted })
-          return { summary: String(summary || ''), runs: finalRuns }
+          const rec: RunRecord = {
+            runId,
+            mode,
+            agent: String(exec.agent.id || ''),
+            provider,
+            concurrency,
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            durationMs: Date.now() - startedMs,
+            aborted: signal.aborted,
+            tasks: tasks.map((tk) => ({ id: tk.id || '', label: tk.label || '', agent: (defFor(tk) || {}).name || '' })),
+            runs: finalRuns,
+            summary: String(summary || ''),
+          }
+          recordRun(rec)
+          emitOrchEvent('orch/run-end', {
+            runId,
+            mode,
+            summary: rec.summary,
+            runs: finalRuns.map((r) => ({ id: r.id, label: r.label, status: r.status })),
+            aborted: rec.aborted,
+            durationMs: rec.durationMs,
+            at: rec.finishedAt,
+          })
+          return { summary: rec.summary, runs: finalRuns }
         } catch (e) {
           debugLog('error', 'orch.error', 'orchestrate 执行失败', { message: String((e && (e as Error).message) || e) })
+          // 失败也留痕（run 记录 + 事件），保证可观测
+          const failedRec: RunRecord = {
+            runId,
+            mode: resolveMode(args.mode),
+            agent: String((exec && exec.agent && exec.agent.id) || ''),
+            provider: '',
+            concurrency: 0,
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            durationMs: Date.now() - startedMs,
+            aborted: !!(exec && exec.signal && exec.signal.aborted),
+            tasks: Array.isArray(args.tasks) ? args.tasks.map((tk: { id?: string; label?: string; agent?: string }) => ({ id: tk.id || '', label: tk.label || '', agent: tk.agent || '' })) : [],
+            runs: [],
+            summary: String((e && (e as Error).message) || e),
+          }
+          recordRun(failedRec)
+          emitOrchEvent('orch/run-end', { runId, mode: failedRec.mode, summary: failedRec.summary, runs: [], aborted: failedRec.aborted, durationMs: failedRec.durationMs, at: failedRec.finishedAt, error: true })
           throw e
         }
       },
@@ -1381,6 +1550,79 @@ async function apply(ctx: Context): Promise<void> {
     try { if (haCommandDispose) haCommandDispose() } catch (e) { /* ignore */ }
   })
 
+  // ================= /orchestrate 命令（run 可观测） =================
+  // /orchestrate runs：最近 run 列表；/orchestrate show <runId>：run 详情。
+  let orchCommandDispose: (() => void) | null = null
+  let orchCommandRetries = 0
+  const ORCH_COMMAND_MAX_RETRIES = 30
+  function installOrchCommand(): void {
+    try { if (orchCommandDispose) { orchCommandDispose(); orchCommandDispose = null } } catch (e) { /* ignore */ }
+    const commands = getService<CommandsService>(ctx, 'commands')
+    if (!commands || typeof commands.register !== 'function') {
+      console.warn('[ha] /orchestrate command: commands service unavailable (attempt ' + (orchCommandRetries + 1) + '/30), retrying in 2s')
+      scheduleOrchCommandRetry()
+      return
+    }
+    try {
+      orchCommandDispose = commands.register({
+        name: 'orchestrate',
+        description: t('orch.cmdDesc'),
+        input: { hint: '[runs|show <runId>]' },
+        handler: (invocation: CommandInvocationLike) => handleOrchCommand(invocation),
+      })
+      orchCommandRetries = 0
+      console.log('[ha] /orchestrate command registered')
+    } catch (e) {
+      console.error('[ha] register /orchestrate command failed', e)
+      scheduleOrchCommandRetry()
+    }
+  }
+  function scheduleOrchCommandRetry(): void {
+    if (orchCommandRetries >= ORCH_COMMAND_MAX_RETRIES) return
+    orchCommandRetries += 1
+    const timer = getService<TimerService>(ctx, 'timer')
+    if (!timer || typeof timer.timeout !== 'function') return
+    try { timer.timeout(() => installOrchCommand(), 2000) } catch (e) { /* ignore */ }
+  }
+  async function handleOrchCommand(invocation: CommandInvocationLike): Promise<{ kind: 'success' | 'error'; text: string }> {
+    try {
+      const parts = String((invocation && invocation.input) || '').trim().split(/\s+/).filter(Boolean)
+      const verb = (parts[0] || 'runs').toLowerCase()
+      const all = await readRunsFromDisk()
+      if (verb === 'show') {
+        const runId = parts[1] || ''
+        const rec = all.find((r) => r.runId === runId) || state.runs.find((r) => r.runId === runId)
+        if (!rec) return { kind: 'error', text: t('orch.runNotFound', { runId }) }
+        const lines = [
+          t('orch.showHead') + ' ' + rec.runId,
+          'mode: ' + rec.mode + ' | agent: ' + rec.agent + ' | provider: ' + (rec.provider || '-'),
+          'tasks: ' + rec.tasks.length + ' | runs: ' + rec.runs.length + ' | duration: ' + (rec.durationMs != null ? rec.durationMs + 'ms' : '-') + (rec.aborted ? ' | aborted' : ''),
+        ]
+        for (const r of rec.runs) {
+          const head = '- [' + r.status + '] ' + (r.label || r.id) + (r.agent ? ' via ' + r.agent : '')
+          const body = String(r.output || '').slice(0, 500)
+          lines.push(head + (body ? '\n  ' + body : ''))
+        }
+        lines.push('---\n' + String(rec.summary || '').slice(0, 800))
+        return { kind: 'success', text: lines.join('\n') }
+      }
+      // runs：最近 10 条
+      if (all.length === 0) return { kind: 'success', text: t('orch.runNone') }
+      const lines = [t('orch.runsHead', { n: Math.min(all.length, 10) })]
+      for (const r of all.slice(0, 10)) {
+        const ok = r.runs.every((x) => x.status !== 'error')
+        lines.push('- ' + r.runId + ' [' + r.mode + (r.aborted ? ',aborted' : '') + '] ' + r.startedAt.slice(0, 19).replace('T', ' ') + ' ' + r.runs.length + ' tasks ' + (ok ? 'ok' : 'has-errors'))
+      }
+      return { kind: 'success', text: lines.join('\n') }
+    } catch (e) {
+      return { kind: 'error', text: String((e && (e as Error).message) || e) }
+    }
+  }
+  installOrchCommand()
+  ctx.effect(() => () => {
+    try { if (orchCommandDispose) orchCommandDispose() } catch (e) { /* ignore */ }
+  })
+
   // ================= 语言系统：运行期跟随 DSH =================
   // 启动切换已在工具注册前完成（见 loadPersistedConfig 之后）；
   // auto 模式下 DSH 语言在运行期变化（用户改 DSH 语言）时自动跟随
@@ -1658,8 +1900,7 @@ async function apply(ctx: Context): Promise<void> {
       return runProbe(keyOf(provider, model), true)
     }
     // 推荐备份候选：从已注册 provider x 模型目录挑选（排除当前默认选择），供配置向导使用
-    async haSuggestBackups(): Promise<Array<{ provider: string; model: string; name: string }>> {
-      const suggestions: Array<{ provider: string; model: string; name: string }> = []
+    async haSuggestBackups(): Promise<Array<{ provider: string; model: string; name: string }>> {      const suggestions: Array<{ provider: string; model: string; name: string }> = []
       const defaultSel = currentDefaultSelection()
       const llm = getService<LlmService>(ctx, 'llm')
       if (!llm) return suggestions
@@ -1681,6 +1922,10 @@ async function apply(ctx: Context): Promise<void> {
       }
       return suggestions
     }
+    // 最近 run 列表（内存，供 UI Run 面板轮询）
+    orchRuns(): { runs: RunRecord[] } {
+      return { runs: state.runs.slice(0, RUN_MEM_CAP) }
+    }
     debugLogs(): { enabled: boolean; logs: DebugLogEntry[] } {
       return { enabled: debugEnabled(), logs: state.debugLogs.slice() }
     }
@@ -1699,6 +1944,7 @@ async function apply(ctx: Context): Promise<void> {
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haStatus', 'haStatus', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haProbeNow', 'haProbeNow', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haSuggestBackups', 'haSuggestBackups', remoteInitializers)
+  decorateRemoteMethod(Remote, HaOrchestratorRpc, 'orchRuns', 'orchRuns', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'debugLogs', 'debugLogs', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'debugClear', 'debugClear', remoteInitializers)
   new HaOrchestratorRpc()

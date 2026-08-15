@@ -40,6 +40,8 @@ export interface OrchConfig {
     concurrency: number;
     maxAgents: number;
     agents: AgentEntry[];
+    /** pipeline 单阶段失败重试次数（0 = 不重试，直接隔离该阶段）。 */
+    stageRetry: number;
 }
 /** 调试配置节。 */
 export interface DebugConfig {
