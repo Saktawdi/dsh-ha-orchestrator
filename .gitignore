@@ -23,8 +23,15 @@ temp/
 docs/local/
 
 # ===== 运行时配置持久化（插件在运行目录生成） =====
+# 新包名（dsh-ha-orchestrator）+ 旧包名（ha-orchestrator，兼容读取回退）
+dsh-ha-orchestrator.config.json
+dsh-ha-orchestrator.config.backup.json
+dsh-ha-orchestrator.ha.json
+dsh-ha-orchestrator.runs.jsonl
 ha-orchestrator.config.json
 ha-orchestrator.config.backup.json
+ha-orchestrator.ha.json
+ha-orchestrator.runs.jsonl
 
 # ===== 环境变量与密钥 =====
 .env

@@ -1,9 +1,9 @@
-# ha-orchestrator 兼容矩阵
+# dsh-ha-orchestrator 兼容矩阵
 
 > 状态：维护中（随每个 DSH rc / Node / 平台验证而更新）
 > 适用版本：本文件描述 **v0.7.0 对应源码** 的兼容事实，基于代码而非承诺。
 
-本文件记录 ha-orchestrator 与 DeepSeek Harness（dsh）、Node、平台及相邻插件的兼容边界。
+本文件记录 dsh-ha-orchestrator 与 DeepSeek Harness（dsh）、Node、平台及相邻插件的兼容边界。
 目标读者：安装者（确认当前环境是否受支持）、维护者（升级/发布前核对）、插件作者（了解协作层级）。
 
 ---

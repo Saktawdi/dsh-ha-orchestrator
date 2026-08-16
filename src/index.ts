@@ -82,7 +82,7 @@ import type {
   TypertRegistryService,
 } from './types.js'
 
-const name = 'ha-orchestrator'
+const name = 'dsh-ha-orchestrator'
 // tools：注册 orchestrate / list-subagents；systemPrompt：上下文注入段落。
 // dsh-tools（tools 提供方）自身就 inject systemPrompt，因此 tools 可用时
 // systemPrompt 必然已激活 —— 加入 inject 保证 apply 时服务必然存在，
@@ -191,14 +191,17 @@ async function apply(ctx: Context): Promise<void> {
   const NON_RETRYABLE_CODES = ['INVALID_CREDENTIAL', 'AUTH', 'UNAUTHORIZED', 'NO_ADAPTER']
   const CONTEXT_WINDOW_CODE = 'CONTEXT_WINDOW_EXCEEDED'
   // HA 运行态持久化文件（隔离/失败计数/游标/历史），与配置文件同目录
-  const HA_STATE_FILE = 'ha-orchestrator.ha.json'
+  const HA_STATE_FILE = 'dsh-ha-orchestrator.ha.json'
+  // 旧包名（ha-orchestrator）时代的持久化文件名：读取时兼容回退，升级不丢配置
+  const LEGACY_HA_STATE_FILE = 'ha-orchestrator.ha.json'
   const HA_PERSIST_DEBOUNCE_MS = 500
   const PROBE_LOG_CAP = 20
   // 探测失败后的重试间隔：不短于冷却、封顶 5 分钟，避免无限增长
   const PROBE_RETRY_MIN_MS = 60 * 1000
   const PROBE_RETRY_MAX_MS = 5 * 60 * 1000
   // run 持久化：JSONL 追加写，内存保留最近 RUN_MEM_CAP 条，磁盘保留 RUN_FILE_CAP 条
-  const RUNS_FILE = 'ha-orchestrator.runs.jsonl'
+  const RUNS_FILE = 'dsh-ha-orchestrator.runs.jsonl'
+  const LEGACY_RUNS_FILE = 'ha-orchestrator.runs.jsonl'
   const RUN_MEM_CAP = 50
   const RUN_FILE_CAP = 200
   // per-agent 游标上限：防止长期运行/大量会话导致 HA 状态文件无限增长
@@ -411,7 +414,8 @@ async function apply(ctx: Context): Promise<void> {
     }
   }
   async function loadPersistedHaState(): Promise<boolean> {
-    const text = await readStorageText(HA_STATE_FILE)
+    let text = await readStorageText(HA_STATE_FILE)
+    if (text == null) text = await readStorageText(LEGACY_HA_STATE_FILE)
     if (text == null) return false
     const restored = haDeserializeState(text)
     if (!restored) {
@@ -463,7 +467,8 @@ async function apply(ctx: Context): Promise<void> {
   // 读取磁盘上的 run 记录列表（JSONL，统一返回“最新在前”，兼容历史乱序文件）
   async function readRunsFromDisk(): Promise<RunRecord[]> {
     try {
-      const text = await readStorageText(RUNS_FILE)
+      let text = await readStorageText(RUNS_FILE)
+      if (text == null) text = await readStorageText(LEGACY_RUNS_FILE)
       if (text == null) return []
       const out: RunRecord[] = []
       for (const line of String(text).split(/\r?\n/)) {
@@ -709,8 +714,11 @@ async function apply(ctx: Context): Promise<void> {
   }
 
   // ================= 配置持久化（JSON 文件 + 备份） =================
-  const CONFIG_FILE = 'ha-orchestrator.config.json'
-  const CONFIG_BACKUP = 'ha-orchestrator.config.backup.json'
+  const CONFIG_FILE = 'dsh-ha-orchestrator.config.json'
+  const CONFIG_BACKUP = 'dsh-ha-orchestrator.config.backup.json'
+  // 旧包名时代的配置文件名：读取回退，保证从旧包升级时配置不丢
+  const LEGACY_CONFIG_FILE = 'ha-orchestrator.config.json'
+  const LEGACY_CONFIG_BACKUP = 'ha-orchestrator.config.backup.json'
   // fs 服务每次用时再查：apply 阶段服务可能尚未就绪（组合行顺序/作用域），
   // 若在 apply 时一次性捕获进闭包，之后永远不会重新解析，持久化会静默失效。
   function fsServiceNow(): FsService | null {
@@ -798,7 +806,10 @@ async function apply(ctx: Context): Promise<void> {
   }
   async function loadPersistedConfig(): Promise<boolean> {
     let raw = parseConfigJson(await readStorageText(CONFIG_FILE))
+    // 旧包名（ha-orchestrator）时代的文件回退：新文件名读不到时依次尝试旧配置/新备份/旧备份
+    if (!raw) raw = parseConfigJson(await readStorageText(LEGACY_CONFIG_FILE))
     if (!raw) raw = parseConfigJson(await readStorageText(CONFIG_BACKUP))
+    if (!raw) raw = parseConfigJson(await readStorageText(LEGACY_CONFIG_BACKUP))
     if (!raw) return false
     const next = sanitizeConfig(raw, defaultConfig)
     for (const key of Object.keys(next)) {
@@ -1010,8 +1021,15 @@ async function apply(ctx: Context): Promise<void> {
         maybeOpenProviderCircuit(provider)
         return { kind: 'retry' }
       }
-      // ---- CONTEXT_WINDOW_EXCEEDED：可选降级（去 reasoningEffort 重试原模型） ----
-      if (code === CONTEXT_WINDOW_CODE && cfg.degradeContextWindow) {
+      // ---- CONTEXT_WINDOW_EXCEEDED：不是模型可用性问题，默认不切备用 ----
+      // 上下文超长时，把相同全文塞给备用模型没有意义（备用模型同样会触发压缩/超限）。
+      // 未开启降级时直接放行给平台（dsh-compaction 等下游）处理；开启降级时才按用户
+      // 配置去掉 reasoningEffort 重试原模型，重试预算耗尽后同样放行。
+      if (code === CONTEXT_WINDOW_CODE) {
+        if (!cfg.degradeContextWindow) {
+          debugLog('info', 'ha.ctx.passthrough', '上下文超长且未开启降级：交给平台压缩处理，不切备用', { agent: agent.id, failingKey, code })
+          return next()
+        }
         if ((entry.retries || 0) >= maxRetries) {
           debugLog('warn', 'ha.budget', '降级重试预算耗尽，放行', { agent: agent.id, failingKey, retries: entry.retries || 0, maxRetries })
           return next()
@@ -1061,7 +1079,9 @@ async function apply(ctx: Context): Promise<void> {
       const cfg: HaConfig = state.config.ha
       if (!cfg.enabled || !cfg.steerOnStop) return
       const { agent, turn, error } = payload
-      const MODEL_CODES = ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'QUOTA', 'CONTEXT_WINDOW_EXCEEDED', 'EMPTY_RESPONSE', 'NO_ADAPTER', 'INVALID_CREDENTIAL']
+      // CONTEXT_WINDOW_EXCEEDED 不在此列：上下文超长不是模型可用性问题，
+      // 不应隔离原模型并 steer 切到备用（否则备用会收到同一份超长全文）。
+      const MODEL_CODES = ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'QUOTA', 'EMPTY_RESPONSE', 'NO_ADAPTER', 'INVALID_CREDENTIAL']
       const code = error && (error as { failure?: { code?: string } }).failure
         ? String((error as { failure: { code?: string } }).failure.code || 'UNKNOWN')
         : (error && typeof (error as { code?: unknown }).code === 'string' ? String((error as { code: string }).code) : '')
@@ -1082,7 +1102,7 @@ async function apply(ctx: Context): Promise<void> {
       const timer = getService<TimerService>(ctx, 'timer')
       const doSteer = (): void => {
         try {
-          ;(agent as unknown as { steer(message: unknown): unknown }).steer({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'ha-orchestrator' } })
+          ;(agent as unknown as { steer(message: unknown): unknown }).steer({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'dsh-ha-orchestrator' } })
         } catch (e) { console.error('[ha] steer failed', e) }
       }
       // 延迟到 driver 回卷结束（idle）后再 steer，唤醒才能真正拉起新一轮
@@ -1591,13 +1611,13 @@ async function apply(ctx: Context): Promise<void> {
   //   - 开启：注入内容 = 用户自定义上下文 config.ctx.text（原文，不翻译）；
   //     留空则回退注入默认的自动编排引导（orch.hintSection，编排启用时），
   //     让模型在适合并行拆解/多阶段/评审把关的任务上自动调用 orchestrate，
-  //     无需用户显式说“使用 ha-orchestrator”。
+  //     无需用户显式说“使用 dsh-ha-orchestrator”。
   //   - 关闭：整段为空（组装器丢弃），模型不获得任何插件上下文。
   // text 为函数：每次组装时求值，跟随当前语言与最新配置。
   // 段落 order 取 40：紧随部署 persona（0）之后、plan-mode（50）与工具引导
   // （100–199）之前，保证自动编排引导处于提示词最醒目位置（原 500 沉底，
   // 模型几乎注意不到，是“从不自动触发编排”的主因之一）。
-  // 默认引导文本自带【ha-orchestrator 插件上下文】标记，便于在轨迹里检索验证。
+  // 默认引导文本自带【dsh-ha-orchestrator 插件上下文】标记，便于在轨迹里检索验证。
   // 注入状态（注册与否/最近一次求值）写入 injectionStatus，经 stateGet 暴露
   // 给设置页「系统」卡片实时展示，无需开启调试模式即可验证。
   // 注册失败不再静默：console 可见 + 定时重试（30 次，2s 间隔，兜底其它部署）。
@@ -1625,7 +1645,7 @@ async function apply(ctx: Context): Promise<void> {
     }
     try {
       contextInjectDispose = sp.section({
-        name: 'ha-orchestrator:context',
+        name: 'dsh-ha-orchestrator:context',
         order: 40,
         text: () => {
           const ctxCfg = state.config && state.config.ctx
@@ -1655,8 +1675,8 @@ async function apply(ctx: Context): Promise<void> {
       injectionStatus.registered = true
       injectionStatus.reason = ''
       contextInjectRetries = 0
-      console.log('[ha] context injection registered: section "ha-orchestrator:context" (order 40)')
-      debugLog('info', 'ctx.inject.install', '上下文注入段落已注册', { section: 'ha-orchestrator:context', order: 40 })
+      console.log('[ha] context injection registered: section "dsh-ha-orchestrator:context" (order 40)')
+      debugLog('info', 'ctx.inject.install', '上下文注入段落已注册', { section: 'dsh-ha-orchestrator:context', order: 40 })
     } catch (e) {
       injectionStatus.registered = false
       injectionStatus.reason = '注册失败：' + String((e && (e as Error).message) || e)
@@ -1821,7 +1841,7 @@ async function apply(ctx: Context): Promise<void> {
     }
     try {
       skillDispose = skills.register({
-        name: 'ha-orchestrator',
+        name: 'dsh-ha-orchestrator',
         source: 'bundled',
         description: t('skill.desc'),
         whenToUse: t('skill.whenToUse'),
@@ -1829,7 +1849,7 @@ async function apply(ctx: Context): Promise<void> {
         invocation: { modelInvocable: false, userInvocable: true },
       })
       skillRegistered = true
-      console.log('[ha] skill registered: ha-orchestrator (user-invocable only)')
+      console.log('[ha] skill registered: dsh-ha-orchestrator (user-invocable only)')
     } catch (e) {
       console.error('[ha] register skill failed', e)
     }
@@ -2382,7 +2402,7 @@ async function apply(ctx: Context): Promise<void> {
       return
     }
     const invocations = REMOTE_METHODS.map(({ method, args }) => ({
-      id: `ha-orchestrator#haOrchestrator/${method}`,
+      id: `dsh-ha-orchestrator#haOrchestrator/${method}`,
       service: 'haOrchestrator',
       namespace: 'haOrchestrator',
       method,

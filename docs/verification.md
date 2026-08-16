@@ -1,6 +1,6 @@
 # 验证与发布
 
-本文档描述 `ha-orchestrator` 插件的测试矩阵、门禁链路、CI 配置、本地开发与发布流程。
+本文档描述 `dsh-ha-orchestrator` 插件的测试矩阵、门禁链路、CI 配置、本地开发与发布流程。
 所有内容基于仓库当前代码事实（`package.json`、`.github/workflows/ci.yml`、`scripts/verify.mjs`、
 `tests/` 与 `README.md`），运行方式与测试计数以实际代码为准。
 
@@ -97,7 +97,7 @@ npm run typecheck && npm run build && npm run check && npm test && npm run verif
 1. **package.json 字段** — 包名/`main`/`types`/`files` 清单、`dsh.bundle.patch`、`exports`、
    `engines.node`、`publishConfig.access = public`、必需 scripts 与 devDependencies.typescript。
 2. **cordis.patch.yml 最小解析** — 文件存在、含顶层 `- insert:`、首行 `id`/`name` 均为
-   `ha-orchestrator`。
+   `dsh-ha-orchestrator`。
 3. **语言包对等** — `.language/zh.json` 与 `.language/en.json` 均为合法 JSON 对象、值全为字符串、
    两组键排序后逐键对等。
 4. **TypeScript 构建产物齐全** — `lib/` 含 `config/ha-core/orch-runner/language/remote/types/index`
@@ -161,7 +161,7 @@ CI 不执行 `npm publish`；发布动作由后述发布流程人工/带环境�
    - 由 npm 自动纳入的 `package.json`
    - `npm pack --dry-run` 已由 `verify` 预检以上关键文件。
 3. **打 tag + GitHub Release** — 提交版本（改版号应同步更新 CHANGELOG），打 `v<version>`
-   tag 并推送，创建 GitHub Release（仓库 `Saktawdi/ha-orchestrator`）并附上步骤 2 的 `.tgz`。
+   tag 并推送，创建 GitHub Release（仓库 `Saktawdi/dsh-ha-orchestrator`）并附上步骤 2 的 `.tgz`。
    > **当前环境状态**：`gh` CLI 未安装、`npm` 未登录账号，因此实际 Release 发布与
    > 后续 `npm publish` 的远端动作**待环境就绪后再执行**；本步骤现仅完成本地验证与产物就绪。
 4. **npm publish** — 远端发布到 npm registry。`publishConfig.access = public`，公开可安装。

@@ -1,4 +1,4 @@
-# ha-orchestrator 架构文档
+# dsh-ha-orchestrator 架构文档
 
 > 版本：v0.7.0（对齐当前 `src/` 代码快照）
 > 范围：基于仓库实际代码（`src/index.ts`、`src/config.ts`、`src/ha-core.ts`、`src/orch-runner.ts`、
@@ -10,14 +10,14 @@
 
 ## 1. 总体架构
 
-`ha-orchestrator` 是一个 **静态 Cordis 插件**（composition row），经 `dsh.bundle.patch`
+`dsh-ha-orchestrator` 是一个 **静态 Cordis 插件**（composition row），经 `dsh.bundle.patch`
 指向的 `cordis.patch.yml` 作为 profile 层挂载，随 DSH 进程启动自动加载。它遵循 **mount-only /
 bundle-only** 原则：**不 patch DSH 核心文件**，只通过公开 `ctx` 服务与稳定事件接缝接入。
 
 ```text
-ha-orchestrator/
+dsh-ha-orchestrator/
 ├── package.json              # 包元数据 + dsh.bundle.patch + dsh.client.inject + peerDependencies
-├── cordis.patch.yml          # bundle patch：一行 insert（row id = ha-orchestrator）
+├── cordis.patch.yml          # bundle patch：一行 insert（row id = dsh-ha-orchestrator）
 ├── src/                      # TypeScript 源码（strict / NodeNext / declaration）
 │   ├── index.ts              # 插件入口：装配 / HA 事件 / 编排工具 / 上下文注入 / RPC 服务
 │   ├── config.ts             # 配置：schema / 默认值 / sanitizeConfig（纯工具）
@@ -44,10 +44,10 @@ ha-orchestrator/
 - `package.json` 声明 `main: lib/index.js`、`types: lib/index.d.ts`、`exports`（含 `./client`、
   `./cordis.patch.yml`），`type: module`（ESM），`engines.node >=20.19.0`。
 - `dsh.bundle.patch: ./cordis.patch.yml` 声明 bundle 补丁；`cordis.patch.yml` 内容为一行
-  `insert: id=ha-orchestrator, name=ha-orchestrator`，由 `dsh plugin add` 作为 profile 层插入
+  `insert: id=dsh-ha-orchestrator, name=dsh-ha-orchestrator`，由 `dsh plugin add` 作为 profile 层插入
   （per row id “last write wins”）。
 - `src/index.ts` 默认导出 `{ apply, inject, name }`：
-  - `name = 'ha-orchestrator'`；
+  - `name = 'dsh-ha-orchestrator'`；
   - `inject = ['tools', 'systemPrompt']`——`ctx.effect` 保证 apply 时这两个依赖服务必然就绪，
     消除「服务尚未就绪导致注入静默跳过」的启动竞态；
   - `apply(ctx)` 完成全部装配，并依靠 **Cordis 行生命周期**：stop/unload 时自动 dispose 事件
@@ -100,16 +100,18 @@ ha-orchestrator/
 | --- | --- | --- |
 | `agent/request` | 每次模型调用前 | `next()` 拿真实配置 → 记录 `lastKey`、清/置 `retries`；`CONTEXT_WINDOW_EXCEEDED` 降级标记时去 `reasoningEffort` 重试；被隔离则 `pickFallback` 切换（推进游标 + 写历史 + `persistSelection` 时 `saveSelection` + `ha/failover`），无备用放行原模型 |
 | `agent/request-error` | 模型请求失败 | 先判断 `signal.aborted`；`failure.code` 不匹配 `cfg.codes` 放行；随后进入错误分类策略（见下） |
-| `agent/error` | 模型错误中断 | 先隔离失败模型（`lastKey`），延迟到 driver idle 后 `agent.steer()` 续跑（`agent/error` 里的延迟 steering） |
+| `agent/error` | 模型错误中断 | 先隔离失败模型（`lastKey`），延迟到 driver idle 后 `agent.steer()` 续跑（`agent/error` 里的延迟 steering）；`CONTEXT_WINDOW_EXCEEDED` 除外（不隔离、不 steer） |
 
 **错误分类策略（`agent/request-error` 内）**：
 
 1. **不可重试错误**（`NON_RETRYABLE_CODES`：`INVALID_CREDENTIAL` / `AUTH` / `UNAUTHORIZED` /
    `NO_ADAPTER`）：重试原模型无意义 → 直接隔离并切备用，**不消耗阈值计数**；
-2. **`CONTEXT_WINDOW_EXCEEDED`**（且 `degradeContextWindow` 开启）：标记 `degradeReasoning`，
-   去 `reasoningEffort` 重试原模型（带退避），可选降级；
-3. **可重试错误**：`bumpFailure`（按 `burstWindowMs` 滑动窗口）累计计数，`count < threshold`
-   时带退避重试原模型，不透支预算。
+2. **`CONTEXT_WINDOW_EXCEEDED`**：属于上下文长度问题而非模型可用性问题，默认**不切备用**
+   （把相同全文塞给备用模型只会再次触发压缩/超限），直接 `next()` 交给平台压缩等下游处理；
+   仅当 `degradeContextWindow` 开启时标记 `degradeReasoning`，去 `reasoningEffort` 重试原模型
+   （带退避），预算耗尽后同样放行；
+3. **可重试错误**（不含 `CONTEXT_WINDOW_EXCEEDED`）：`bumpFailure`（按 `burstWindowMs` 滑动窗口）
+   累计计数，`count < threshold` 时带退避重试原模型，不透支预算。
 
 **两层熔断**：
 - **模型级**：阈值到达 → `quarantineKey`（精确键，`level='model'`）+ `maybeOpenProviderCircuit`；
@@ -157,9 +159,9 @@ newRunId -> acquireOrchSlot(全局并发信号量)
 
 | 文件 | 内容 | 写入方式 | 容量 |
 | --- | --- | --- | --- |
-| `ha-orchestrator.config.json`（+ `.backup.json`） | 完整配置 | 写前把旧配置备份到 backup，再写主文件；`persistConfig` 记录 `activeStorageDir` + 诊断 | —— |
-| `ha-orchestrator.ha.json` | HA 运行态：隔离/失败计数/游标/历史 | `scheduleHaPersist` 防抖 500ms；全空时不建文件 | 历史 50 条 |
-| `ha-orchestrator.runs.jsonl` | 每次 orchestrate 一条 run 记录 | JSONL 读-追加-修剪-写 | 磁盘 200 条 / 内存 50 条 |
+| `dsh-ha-orchestrator.config.json`（+ `.backup.json`） | 完整配置 | 写前把旧配置备份到 backup，再写主文件；`persistConfig` 记录 `activeStorageDir` + 诊断 | —— |
+| `dsh-ha-orchestrator.ha.json` | HA 运行态：隔离/失败计数/游标/历史 | `scheduleHaPersist` 防抖 500ms；全空时不建文件 | 历史 50 条 |
+| `dsh-ha-orchestrator.runs.jsonl` | 每次 orchestrate 一条 run 记录 | JSONL 读-追加-修剪-写 | 磁盘 200 条 / 内存 50 条 |
 
 - **storageDirs 降级顺序**：
   1. 会话 workspace（从 `agents` 服务首个 agent 的 `session.header.cwd`）或 `launchEnvironment`
@@ -205,7 +207,7 @@ newRunId -> acquireOrchSlot(全局并发信号量)
 - **ctx.tools 注册**：`orchestrate`（auto 编排工具，参数含 mode/agent/supervisorAgent/preset/
   resume/reviewRounds/tasks/mergeInstructions/concurrency，输出 `{summary, runs}`）与
   `list-subagents`（按需查询可用自定义子智能体清单，避免每轮注入占上下文）。
-- **systemPrompt section**：`ha-orchestrator:context`，`order: 40`（紧随部署 persona 0 之后、
+- **systemPrompt section**：`dsh-ha-orchestrator:context`，`order: 40`（紧随部署 persona 0 之后、
   plan-mode 50 与工具引导 100–199 之前，保证自动编排引导醒目）；关闭时为整段丢弃。
 - **命令**：`/ha`（status / reset / probe `<provider> <model>`）与 `/orchestrate`
   （runs / show `<runId>` / presets）。

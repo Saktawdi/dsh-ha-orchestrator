@@ -11,7 +11,7 @@ async function check(name, fn) { await fn(); checks.push(name); console.log('[ve
 
 const pkg = JSON.parse(read('package.json'))
 await check('package.json fields', () => {
-  assert(pkg.name === 'ha-orchestrator', 'package name')
+  assert(pkg.name === 'dsh-ha-orchestrator', 'package name')
   assert(pkg.main === 'lib/index.js', 'main')
   assert(pkg.types === 'lib/index.d.ts', 'types')
   assert(Array.isArray(pkg.files) && pkg.files.includes('lib'), 'files.lib')
@@ -46,7 +46,7 @@ await check('cordis.patch.yml minimal parse', () => {
     else if (name && current) current.name = name[1]
     else if (/^\S/.test(line)) break
   }
-  assert(rows.length >= 1 && rows[0].id === 'ha-orchestrator' && rows[0].name === 'ha-orchestrator', 'row id/name mismatch')
+  assert(rows.length >= 1 && rows[0].id === 'dsh-ha-orchestrator' && rows[0].name === 'dsh-ha-orchestrator', 'row id/name mismatch')
 })
 
 await check('language packs', () => {

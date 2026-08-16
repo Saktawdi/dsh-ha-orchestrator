@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.11.2] - 2026-08-16
+
+### Changed
+- **包名规范化为 `dsh-ha-orchestrator`**（原 `ha-orchestrator`）：插件名、cordis patch row（id/name）、RPC id 前缀、skill 名、上下文注入 section（`dsh-ha-orchestrator:context`）、`data-plugin` 标识、设置 section id 全部同步；持久化文件名改为 `dsh-ha-orchestrator.config.json` / `.config.backup.json` / `.ha.json` / `.runs.jsonl`。
+- **旧文件兼容读取**：启动时新文件名读不到会自动回退读取旧包名（`ha-orchestrator.*`）时代的配置文件/HA 运行态/run 记录，升级不丢配置；新写入一律使用新文件名。
+- 安装路径与文档同步：`node_modules/dsh-ha-orchestrator`、`await import('dsh-ha-orchestrator')` 探测、GitHub 仓库地址不变。
+
+### Fixed
+- `CONTEXT_WINDOW_EXCEEDED` 不再作为 HA 切备用的触发条件：上下文超长属于上下文长度问题，把同一份全文塞给备用模型只会再次触发压缩/超限。现在未开启 `degradeContextWindow` 时直接放行给平台压缩处理；`agent/error` 停止兜底也不再对 `CONTEXT_WINDOW_EXCEEDED` 隔离/steer 切备用。
+
 ## [0.11.1] - 2026-08-15
 
 ### Changed

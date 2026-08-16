@@ -1,6 +1,6 @@
 # 安全说明（Security）
 
-> ha-orchestrator 的安全边界、已落地的防护措施与建议。本文基于源码事实编写
+> dsh-ha-orchestrator 的安全边界、已落地的防护措施与建议。本文基于源码事实编写
 > （`src/language.ts`、`src/config.ts`、`src/index.ts`、`src/orch-runner.ts`、`src/remote.ts`、
 > `package.json`），未抽象描述，仅陈述代码实际执行的防护。
 
@@ -17,9 +17,9 @@
 | 输入面 | 文件/来源 | 可信度 | 说明 |
 | --- | --- | --- | --- |
 | 语言包 | 插件包内 `.language/zh.json`、`.language/en.json`（位于插件包根目录） | 本地文件，运行期从磁盘读取 | `readPluginFile` 优先 `node:fs` 读插件包真实路径，失败回退到 `fs` 服务；任何非字符串值视为畸形包 |
-| 持久化配置 | `ha-orchestrator.config.json`（+ `ha-orchestrator.config.backup.json` 备份） | 本地文件，可被篡改 | 启动加载，亦可被 `stateImport`/`stateReload` 触发重读 |
-| HA 运行态 | `ha-orchestrator.ha.json` | 本地文件，可被篡改 | 隔离/失败计数/游标/历史，启动时 `deserializeHaState` 解析并回灌内存 |
-| Run 记录 | `ha-orchestrator.runs.jsonl` | 本地文件，可被篡改 | 每条 orchestrate 调用一行 JSON，`readRunsFromDisk` 逐行解析 |
+| 持久化配置 | `dsh-ha-orchestrator.config.json`（+ `dsh-ha-orchestrator.config.backup.json` 备份） | 本地文件，可被篡改 | 启动加载，亦可被 `stateImport`/`stateReload` 触发重读 |
+| HA 运行态 | `dsh-ha-orchestrator.ha.json` | 本地文件，可被篡改 | 隔离/失败计数/游标/历史，启动时 `deserializeHaState` 解析并回灌内存 |
+| Run 记录 | `dsh-ha-orchestrator.runs.jsonl` | 本地文件，可被篡改 | 每条 orchestrate 调用一行 JSON，`readRunsFromDisk` 逐行解析 |
 | RPC 入参 | 配置页 Web UI（`ctx.remote.haOrchestrator.*`） | 宿主内，跨组件 | `stateSet`/`stateImport`/`orchSavePreset`/`agentsGenerate`/`haProbeNow` 均为未经类型约束的外部输入 |
 | 工具入参 | `orchestrate` / `list-subagents` 由模型调用 | 低可信（模型可能被诱导） | `args.tasks`、`args.agent`、`args.supervisorAgent` 等直接来自工具调用负载 |
 
@@ -140,9 +140,9 @@
 
 | 文件 | 内容 | 敏感度 |
 | --- | --- | --- |
-| `ha-orchestrator.config.json`（+ `.backup.json`） | 完整配置，含 backups/model 选型、自定义子智能体 `systemPrompt`、上下文注入 `ctx.text` | **中—高**：可能含用户编写的自定义系统提示词与编排配方文本 |
-| `ha-orchestrator.ha.json` | 隔离键、失败计数、游标、历史 | 低—中：含 provider/model 名与错误码 |
-| `ha-orchestrator.runs.jsonl` | 每次 orchestrate 的完整 run：tasks 的 `prompt`、各 run 的 `output`、`summary` | **高**：含发送给子智能体的原始任务与输出全文 |
+| `dsh-ha-orchestrator.config.json`（+ `.backup.json`） | 完整配置，含 backups/model 选型、自定义子智能体 `systemPrompt`、上下文注入 `ctx.text` | **中—高**：可能含用户编写的自定义系统提示词与编排配方文本 |
+| `dsh-ha-orchestrator.ha.json` | 隔离键、失败计数、游标、历史 | 低—中：含 provider/model 名与错误码 |
+| `dsh-ha-orchestrator.runs.jsonl` | 每次 orchestrate 的完整 run：tasks 的 `prompt`、各 run 的 `output`、`summary` | **高**：含发送给子智能体的原始任务与输出全文 |
 
 ### 泄露面说明
 
@@ -162,7 +162,7 @@
 - **不 patch 核心**：`package.json` 无 bundle patch 行为（`dsh.bundle.patch` 指向 `cordis.patch.yml`，
   这是插件自身的装配声明，不是对 DSH 核心的修改）；插件作为组合行 mount-only。
 - **上下文注入有开关**：`ctx.enabled` 默认 `true`，但注入内容默认**仅引导文本**
-  （`t('orch.hintSection')`，含【ha-orchestrator 插件上下文】标记便于检索）；自定义文本
+  （`t('orch.hintSection')`，含【dsh-ha-orchestrator 插件上下文】标记便于检索）；自定义文本
   `ctx.text` 默认空。关闭时 `text()` 返回空串，组装器丢弃该段落，模型不获得任何插件上下文。
 - **事件监听全部经 `ctx.effect` 注册**：工具（`toolDisposes`）、systemPrompt 段落
   （`contextInjectDispose`）、`/ha` 命令、`/orchestrate` 命令均在 `ctx.on/effect` 生命周期内注册，
@@ -207,7 +207,7 @@
 
 1. 保持会话 workspace 与 DSH 数据目录**仅对可信进程可读写**，尤其因为 `runs.jsonl` 明文存全量 run 内容。
 2. 若担心提示注入，可关闭上下文注入（`ctx.enabled = false`），模型将不获得插件引导文本。
-3. 若无需在配置期间记录编排输出，可审慎清理 `ha-orchestrator.runs.jsonl`；内存/磁盘均有容量上限
+3. 若无需在配置期间记录编排输出，可审慎清理 `dsh-ha-orchestrator.runs.jsonl`；内存/磁盘均有容量上限
    （`RUN_MEM_CAP=50`、`RUN_FILE_CAP=200`），超出后自动裁掉最旧记录。
 4. 升级宿主或锁定新 peerDependencies 版本后，重新跑 `npm run verify` 与回归测试，确认工具注册、
    LLM 拦截、子智能体契约仍兼容。

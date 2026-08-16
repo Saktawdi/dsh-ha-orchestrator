@@ -212,7 +212,7 @@ test('装配：工具/上下文注入/事件/RPC 服务全部注册', async () =
   const { ctx } = makeEnv()
   const mod = await mountPlugin(ctx)
 
-  assert.equal(mod.name, 'ha-orchestrator')
+  assert.equal(mod.name, 'dsh-ha-orchestrator')
   assert.deepEqual(mod.inject, ['tools', 'systemPrompt'])
 
   // 工具
@@ -222,7 +222,7 @@ test('装配：工具/上下文注入/事件/RPC 服务全部注册', async () =
 
   // 上下文注入段落（order 40）
   assert.equal(ctx.sections.length, 1)
-  assert.equal(ctx.sections[0].name, 'ha-orchestrator:context')
+  assert.equal(ctx.sections[0].name, 'dsh-ha-orchestrator:context')
   assert.equal(ctx.sections[0].order, 40)
 
   // 事件监听
@@ -242,7 +242,7 @@ test('装配：工具/上下文注入/事件/RPC 服务全部注册', async () =
   // 直接注册 src-json invocation，确保 /api/haOrchestrator/* 不被 404。
   assert.equal(ctx.typertContributions.length, 1)
   const typertContribution = ctx.typertContributions[0]
-  assert.equal(typertContribution.package, 'ha-orchestrator')
+  assert.equal(typertContribution.package, 'dsh-ha-orchestrator')
   assert.equal(typertContribution.face, 'host')
   assert.ok(typertContribution.invocations.some((d) => d.namespace === 'haOrchestrator' && d.method === 'stateGet'))
   assert.ok(typertContribution.invocations.some((d) => d.method === 'stateSet' && d.parameters[0].wire === 'args'))
@@ -265,7 +265,7 @@ test('上下文注入求值：自定义文本 / 默认引导 / 关闭', async ()
   // 默认：无自定义文本、orch.enabled -> 自动编排引导
   const hint = section.text()
   assert.ok(hint.length > 0)
-  assert.ok(hint.indexOf('ha-orchestrator') >= 0 || hint.indexOf('orchestrate') >= 0)
+  assert.ok(hint.indexOf('dsh-ha-orchestrator') >= 0 || hint.indexOf('orchestrate') >= 0)
 
   // 自定义文本优先
   await rpc.stateSet({ patch: { ctx: { text: 'CUSTOM-TEXT-123' } } })
@@ -346,7 +346,7 @@ test('HA 停止兜底：agent/error 隔离失败模型并延迟 steer', async ()
   await new Promise((resolve) => setTimeout(resolve, 250))
   assert.equal(ctx.steers.length, 1)
   assert.ok(ctx.steers[0].content[0].text.length > 0, 'steer 文本非空')
-  assert.equal(ctx.steers[0].source.plugin, 'ha-orchestrator')
+  assert.equal(ctx.steers[0].source.plugin, 'dsh-ha-orchestrator')
 })
 
 test('orchestrate fanout：并行执行并保序返回 runs', async () => {
@@ -433,7 +433,7 @@ test('配置持久化：stateSet 写盘 -> 新实例启动恢复（磁盘状态�
   await rpcA.stateSet({ patch: { orch: { maxAgents: 12, concurrency: 5 } } })
 
   // 磁盘上确实写入了配置文件
-  const file = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.config.json') >= 0)
+  const file = [...fs.store.keys()].find((k) => k.indexOf('dsh-ha-orchestrator.config.json') >= 0)
   assert.ok(file, '配置文件已写入: ' + [...fs.store.keys()].join(','))
   const written = JSON.parse(fs.store.get(file))
   assert.equal(written.orch.maxAgents, 12)
@@ -449,7 +449,7 @@ test('配置持久化：stateSet 写盘 -> 新实例启动恢复（磁盘状态�
 
   // 备份文件语义：第二次 stateSet 会把旧配置写为 backup
   await rpcB.stateSet({ patch: { orch: { maxAgents: 16 } } })
-  const backup = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.config.backup.json') >= 0)
+  const backup = [...fs.store.keys()].find((k) => k.indexOf('dsh-ha-orchestrator.config.backup.json') >= 0)
   assert.ok(backup, '旧配置已写为备份')
   assert.equal(JSON.parse(fs.store.get(backup)).orch.maxAgents, 12)
 })
@@ -578,6 +578,45 @@ test('Phase1 CONTEXT_WINDOW_EXCEEDED 降级：去掉 reasoningEffort 重试原�
   assert.equal(out.reasoningEffort, undefined, '降级请求去掉 reasoningEffort')
 })
 
+test('Phase1 CONTEXT_WINDOW_EXCEEDED 未开启降级：放行给平台，不切备用/不隔离', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], degradeContextWindow: false } } })
+
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  const action = await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'CONTEXT_WINDOW_EXCEEDED' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+  assert.equal(action, undefined, '上下文超长未开启降级时交给下游处理')
+
+  const status = await rpc.haStatus()
+  assert.equal(status.quarantine.length, 0, '上下文超长不隔离原模型')
+  assert.equal(status.failures.length, 0, '上下文超长不累计失败计数')
+
+  // 下一次请求仍走原模型，不会切到备用
+  const out = await ctx.waterfall('agent/request', { turn: 2, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  assert.equal(out.provider, 'p0')
+  assert.equal(out.model, 'm0')
+})
+
+test('Phase1 CONTEXT_WINDOW_EXCEEDED 停止兜底：不隔离/不 steer 切备用', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], steerOnStop: true } } })
+
+  // 先走一次请求建立 lastKey
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+
+  await ctx.emit('agent/error', { agent: fakeAgent, turn: 1, step: 0, error: { failure: { code: 'CONTEXT_WINDOW_EXCEEDED' } } })
+
+  const status = await rpc.haStatus()
+  assert.equal(status.quarantine.length, 0, '上下文超长不因停止兜底隔离原模型')
+
+  // 延迟 steer 窗口内不应产生 steer
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.equal(ctx.steers.length, 0, '上下文超长不 steer 切备用')
+})
+
 test('Phase1 provider 级熔断：模型阈值触发后整个 provider 不可用', async () => {
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
@@ -694,7 +733,7 @@ test('Phase1 HA 运行态持久化：重启恢复隔离/游标/历史', async ()
 
   // 等防抖写盘
   await new Promise((resolve) => setTimeout(resolve, 400))
-  const haFile = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.ha.json') >= 0)
+  const haFile = [...fs.store.keys()].find((k) => k.indexOf('dsh-ha-orchestrator.ha.json') >= 0)
   assert.ok(haFile, 'HA 运行态文件已写入: ' + [...fs.store.keys()].join(','))
   const parsed = JSON.parse(fs.store.get(haFile))
   assert.equal(parsed.version, 1)
@@ -772,7 +811,7 @@ test('Phase2 run 记录：orchestrate 生成 runId 并落盘（JSONL）', async 
 
   // 磁盘 JSONL（等防抖无关——run 立即写盘）
   await new Promise((resolve) => setTimeout(resolve, 250))
-  const file = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.runs.jsonl') >= 0)
+  const file = [...fs.store.keys()].find((k) => k.indexOf('dsh-ha-orchestrator.runs.jsonl') >= 0)
   assert.ok(file, 'run 文件已写入')
   const lines = fs.store.get(file).trim().split(/\r?\n/)
   assert.equal(lines.length, 1)
@@ -1222,21 +1261,21 @@ test('Phase4 随包 Skill：注册为用户可主动调用，不自动注入模�
   const { ctx } = makeEnv()
   await mountPlugin(ctx)
 
-  const skill = ctx.skills.find((s) => s.name === 'ha-orchestrator')
+  const skill = ctx.skills.find((s) => s.name === 'dsh-ha-orchestrator')
   assert.ok(skill, 'skill 已注册')
   assert.equal(skill.source, 'bundled')
   assert.equal(skill.invocation.modelInvocable, false, '不进入模型自动调用目录')
   assert.equal(skill.invocation.userInvocable, true, '保留用户主动调用入口')
   assert.ok(skill.description.length > 0)
   assert.ok(skill.whenToUse.length > 0)
-  assert.ok(skill.content.indexOf('ha-orchestrator') >= 0, '正文包含插件名')
+  assert.ok(skill.content.indexOf('dsh-ha-orchestrator') >= 0, '正文包含插件名')
   assert.ok(skill.content.indexOf('/ha probe') >= 0, '正文包含排障命令')
   assert.ok(skill.content.length > 300, '正文为完整 markdown 指引')
 
   // 语言跟随：en 模式下正文为英文（skill 随语言重建，最新一条生效）
   const rpc = ctx.get('haOrchestrator')
   await rpc.stateSet({ patch: { lang: { mode: 'en' } } })
-  const regs = ctx.skills.filter((s) => s.name === 'ha-orchestrator')
+  const regs = ctx.skills.filter((s) => s.name === 'dsh-ha-orchestrator')
   assert.ok(regs.length >= 2, '语言切换后 skill 重建')
   const enSkill = regs[regs.length - 1]
   assert.ok(enSkill.content.indexOf('troubleshooting') >= 0, 'en 正文生效')
@@ -1253,7 +1292,7 @@ test('H2 run 文件顺序：连续 run 后磁盘按最新在前', async () => {
   const r3 = await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'r3', prompt: 'c' }] }, { id: 'a1' })
   await new Promise((resolve) => setTimeout(resolve, 50))
 
-  const file = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.runs.jsonl') >= 0)
+  const file = [...fs.store.keys()].find((k) => k.indexOf('dsh-ha-orchestrator.runs.jsonl') >= 0)
   assert.ok(file, 'run 文件已写入')
   const ids = fs.store.get(file).trim().split(/\r?\n/).map((l) => JSON.parse(l).runId)
   assert.deepEqual(ids, [r3.runId, r2.runId, r1.runId], '文件内应为最新在前')
@@ -1267,7 +1306,7 @@ test('H1 run 持久化：并发结束不丢记录', async () => {
   await Promise.all(Array.from({ length: N }, (_, i) => toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'c' + i, prompt: 'p' }] }, { id: 'a1' })))
   await new Promise((resolve) => setTimeout(resolve, 100))
 
-  const file = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.runs.jsonl') >= 0)
+  const file = [...fs.store.keys()].find((k) => k.indexOf('dsh-ha-orchestrator.runs.jsonl') >= 0)
   assert.ok(file, 'run 文件已写入')
   const lines = fs.store.get(file).trim().split(/\r?\n/).filter(Boolean)
   assert.equal(lines.length, N, '并发 run 不应丢失磁盘记录')
@@ -1283,7 +1322,7 @@ test('H3 haReset 后重启不恢复旧状态', async () => {
   await envA.ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: envA.fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await envA.ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: envA.fakeAgent }, () => Promise.resolve(undefined))
   await new Promise((resolve) => setTimeout(resolve, 400))
-  const haFile = [...fs.store.keys()].find((k) => k.indexOf('ha-orchestrator.ha.json') >= 0)
+  const haFile = [...fs.store.keys()].find((k) => k.indexOf('dsh-ha-orchestrator.ha.json') >= 0)
   assert.ok(haFile, 'HA 状态文件已写入')
   assert.equal(JSON.parse(fs.store.get(haFile)).quarantine.length, 1)
 

@@ -1,6 +1,6 @@
 # 贡献指南（CONTRIBUTING）
 
-欢迎为 **ha-orchestrator** 贡献代码、文档与反馈！本插件面向 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（DSH），提供「模型高可用故障切换 + 子智能体编排」。我们希望协作是低摩擦的：这份指南用中文书写（技术术语保留英文），说明项目结构、开发环境、代码约定、提交门禁与发布流程。
+欢迎为 **dsh-ha-orchestrator** 贡献代码、文档与反馈！本插件面向 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（DSH），提供「模型高可用故障切换 + 子智能体编排」。我们希望协作是低摩擦的：这份指南用中文书写（技术术语保留英文），说明项目结构、开发环境、代码约定、提交门禁与发布流程。
 
 > 遇到问题、有想法？请先阅读 [报告问题 / 提功能](#8-如何报告-bug--提-feature)。直接改动前，建议先提一个 Issue 或 PR 草稿对齐方向。
 
@@ -8,7 +8,7 @@
 
 ## 1. 项目简介与架构速览
 
-ha-orchestrator 是一个 **静态 Cordis 插件**，随 DSH 进程启动自动加载，遵循 **mount-only / bundle-only** 原则（不 patch DSH 核心文件，只经公开 `ctx` 服务与稳定事件接缝接入）：
+dsh-ha-orchestrator 是一个 **静态 Cordis 插件**，随 DSH 进程启动自动加载，遵循 **mount-only / bundle-only** 原则（不 patch DSH 核心文件，只经公开 `ctx` 服务与稳定事件接缝接入）：
 
 - **HA（High Availability）**：模型调用失败时按备用链切换、熔断、冷却、重试预算与失败续跑（steer）；
 - **编排（Orchestration）**：提供 `orchestrate` 工具（fanout / pipeline / supervisor，以及 map-reduce / router），模型在适合时自动把任务拆给并行子智能体执行；
@@ -19,9 +19,9 @@ ha-orchestrator 是一个 **静态 Cordis 插件**，随 DSH 进程启动自动�
 **目录结构速览**（源码视图）：
 
 ```text
-ha-orchestrator/
+dsh-ha-orchestrator/
 ├── package.json          # 元数据 + dsh.bundle.patch + dsh.client.inject + peerDependencies
-├── cordis.patch.yml      # bundle patch：一行 insert（row id = ha-orchestrator）
+├── cordis.patch.yml      # bundle patch：一行 insert（row id = dsh-ha-orchestrator）
 ├── src/                  # TypeScript strict 源码
 │   ├── index.ts          # 插件入口（唯一持 ctx 的装配层）
 │   ├── config.ts         # 配置 schema / sanitize（纯模块，无 DSH 依赖）
@@ -141,7 +141,7 @@ chore: 升级 peerDependencies 至 rc.6 类型线
 - 发布前先更新 `CHANGELOG.md`（遵循 Keep a Changelog 风格，含版本号与日期），并核对 `docs/` 文档（架构 / 配置 / 兼容矩阵）。
 - 以 `pnpm verify` / `npm run verify`（同 prepublishOnly 全链路）作为发布前门禁。
 - 打 `git tag`（`v<version>`）并创建 GitHub Release，附带 `npm pack` 产物（`.tgz`）。
-- npm 发布侧：包名为 `ha-orchestrator`（public access），产物经 `files` 字段包含 `lib/`、`cordis.patch.yml`、`.language/`、`README.md`、`README.zh-CN.md`、`CHANGELOG.md`、`docs/`、`LICENSE`。
+- npm 发布侧：包名为 `dsh-ha-orchestrator`（public access），产物经 `files` 字段包含 `lib/`、`cordis.patch.yml`、`.language/`、`README.md`、`README.zh-CN.md`、`CHANGELOG.md`、`docs/`、`LICENSE`。
 
 **详细发布 / 校验步骤见 [`docs/verification.md`](docs/verification.md)**（含产物完整性、离线冒烟与发布前检查清单）。
 

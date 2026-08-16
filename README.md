@@ -2,7 +2,7 @@
 
 # HA Orchestrator
 
-[![Version](https://img.shields.io/badge/version-v0.2.1-4d6bfe?style=flat-square)](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.2.1)
+[![Version](https://img.shields.io/badge/version-v0.2.1-4d6bfe?style=flat-square)](https://github.com/Saktawdi/dsh-ha-orchestrator/releases/tag/v0.2.1)
 [![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square)](https://github.com/deepseek-ai/dsh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
@@ -38,7 +38,7 @@ If a particular run does not orchestrate on its own, just say "use orchestration
 
 > Note: if the current session uses a `complete: true` persona preset such as `minimal` / `minimal-v3`, the platform intentionally drops plugin system-prompt sections; auto-triggering then relies on the `orchestrate` tool description alone. The plugin now includes "read a large project" in that description, but if it still does not trigger, just say "use orchestration".
 
-You can also turn off the auto-triggering: in Settings → "HA 与编排" → System card, turn off **context injection**. The model then only orchestrates when you ask for it, for example "use the ha-orchestrator plugin".
+You can also turn off the auto-triggering: in Settings → "HA 与编排" → System card, turn off **context injection**. The model then only orchestrates when you ask for it, for example "use the dsh-ha-orchestrator plugin".
 
 ### Custom subagents
 
@@ -62,18 +62,18 @@ Requires `pnpm` on PATH:
    dsh plugin --profile web add "file:<absolute-path-to-this-repo>"
    ```
 
-2. Because this package declares `dsh.bundle.patch`, `dsh plugin add` automatically adds **ha-orchestrator** to `dsh.profile.bundles` and applies `cordis.patch.yml`. No manual composition line is needed.
+2. Because this package declares `dsh.bundle.patch`, `dsh plugin add` automatically adds **dsh-ha-orchestrator** to `dsh.profile.bundles` and applies `cordis.patch.yml`. No manual composition line is needed.
 3. No restart needed: the bundle-patch layer is hot-reloaded (Cordis HMR), so the plugin activates in the running process. Refresh the browser page to load the settings UI. The plugin also loads at startup and survives restarts.
 
 ### Method 2: manual install (no pnpm)
 
-1. Clone/copy this repo into your DSH profile: `~/.dsh/profiles/web/node_modules/ha-orchestrator`
+1. Clone/copy this repo into your DSH profile: `~/.dsh/profiles/web/node_modules/dsh-ha-orchestrator`
 2. Add it to the composition file `~/.dsh/profiles/web/cordis.patch.yml`:
 
    ```yaml
    - insert:
-       - id: ha-orchestrator
-         name: ha-orchestrator
+       - id: dsh-ha-orchestrator
+         name: dsh-ha-orchestrator
    ```
 
 3. No restart needed: the profile patch layer is hot-reloaded (Cordis HMR), so the plugin activates in the running process. Refresh the browser page to load the settings UI. The plugin also loads at startup and survives restarts.
@@ -83,7 +83,7 @@ Requires `pnpm` on PATH:
 1. In DSH, switch to **Creator Mode**.
 2. Send your agent the repo link plus this prompt (it encodes the pitfalls found during real installs — do not let the AI improvise around them):
 
-   > Install the **ha-orchestrator** plugin from https://github.com/Saktawdi/ha-orchestrator into the DSH **web profile** (`$DSH_HOME/profiles/web`, default `~/.dsh/profiles/web`). This package **now declares** `dsh.bundle.patch`, so `dsh plugin add` automatically updates `dsh.profile.bundles` and applies `cordis.patch.yml`; do **not** manually insert a composition row afterwards, and do not edit `cordis.yml` (it is rewritten at boot). If an older version manually inserted a row with id `ha-orchestrator`, delete that `insert` block and let the bundle-patch layer take over. Steps:
+   > Install the **dsh-ha-orchestrator** plugin from https://github.com/Saktawdi/dsh-ha-orchestrator into the DSH **web profile** (`$DSH_HOME/profiles/web`, default `~/.dsh/profiles/web`). This package **now declares** `dsh.bundle.patch`, so `dsh plugin add` automatically updates `dsh.profile.bundles` and applies `cordis.patch.yml`; do **not** manually insert a composition row afterwards, and do not edit `cordis.yml` (it is rewritten at boot). If an older version (pre-rename) manually inserted a row with id `ha-orchestrator`, delete that `insert` block and let the bundle-patch layer take over. Steps:
    >
    > 1. **Install the package as a real directory — never a symlink/junction.** Node's ESM loader resolves a module to its real path, so a symlink pointing at the plugin checkout cannot reach its peer deps (`@deepseek-ai/dsh-tools`, `react`, …); only `$DSH_HOME/profiles/node_modules` (the installation fallback) provides them. Canonical command (needs `pnpm` on PATH):
    >
@@ -91,21 +91,21 @@ Requires `pnpm` on PATH:
    >    dsh plugin --profile web add "file:<absolute-path-to-repo>"
    >    ```
    >
-   >    The `file:` protocol installs a content snapshot into the profile's `node_modules` and records it in `package.json` (so a later `pnpm install` does not prune it). A bare path or `link:` creates a symlink and **fails at runtime**. If pnpm is unavailable, copy the repo (excluding `.git` and `node_modules`) into `~/.dsh/profiles/web/node_modules/ha-orchestrator/` and record the `file:` dependency in the profile `package.json` yourself.
+   >    The `file:` protocol installs a content snapshot into the profile's `node_modules` and records it in `package.json` (so a later `pnpm install` does not prune it). A bare path or `link:` creates a symlink and **fails at runtime**. If pnpm is unavailable, copy the repo (excluding `.git` and `node_modules`) into `~/.dsh/profiles/web/node_modules/dsh-ha-orchestrator/` and record the `file:` dependency in the profile `package.json` yourself.
    >
-   > 2. **No manual composition row is needed** — the declared `dsh.bundle.patch` (`cordis.patch.yml`) is applied automatically. Just confirm that `dsh.profile.bundles` now lists **ha-orchestrator**.
+   > 2. **No manual composition row is needed** — the declared `dsh.bundle.patch` (`cordis.patch.yml`) is applied automatically. Just confirm that `dsh.profile.bundles` now lists **dsh-ha-orchestrator**.
    >
    > 3. **No process restart is needed** — the bundle-patch layer is hot-reloaded (Cordis HMR) and the plugin activates live. The user only needs to **refresh the browser page** for the client half (Settings → "HA 与编排").
    >
    > 4. **Verify before declaring done**:
-   >    - `dsh --profile web --dump-config` lists the `ha-orchestrator` row.
-   >    - Resolution probe: a temporary `probe.mjs` inside the profile dir running `await import('ha-orchestrator')` must print `apply,default,inject,name` (delete it afterwards).
+   >    - `dsh --profile web --dump-config` lists the `dsh-ha-orchestrator` row.
+   >    - Resolution probe: a temporary `probe.mjs` inside the profile dir running `await import('dsh-ha-orchestrator')` must print `apply,default,inject,name` (delete it afterwards).
    >    - In a session, the `orchestrate` and `list-subagents` tools are registered; calling `list-subagents` returns the configured subagent roster.
    >    - On failure, fix the root cause (package location, patch syntax, row id) and re-save the patch file to re-trigger the watcher — do not "fix" by restarting the process.
 
 3. The plugin then loads at DSH startup and survives restarts.
 
-> **Version note:** [v0.1.0](https://github.com/Saktawdi/ha-orchestrator/releases/tag/v0.1.0) was the previous dynamic build, deployed per session via `cordis_define` and released only for feature preview. Starting with v0.2.0 the plugin is static and loads with DSH at startup. From the version that introduces the bundle patch, Method 1 (one-command install) is recommended.
+> **Version note:** [v0.1.0](https://github.com/Saktawdi/dsh-ha-orchestrator/releases/tag/v0.1.0) was the previous dynamic build, deployed per session via `cordis_define` and released only for feature preview. Starting with v0.2.0 the plugin is static and loads with DSH at startup. From the version that introduces the bundle patch, Method 1 (one-command install) is recommended.
 
 ## Usage
 
@@ -165,8 +165,8 @@ Settings → "HA 与编排":
 
 ## Notes
 
-- Config is written to the first writable location among the current session workspace / `DSH_HOME`, the sandbox `workspace-write` writable root, and the fs default cwd (file `ha-orchestrator.config.json`, backup `ha-orchestrator.config.backup.json`), and looked up in the same order and restored on startup.
-- HA runtime state (quarantine, failure counters, rotation cursors, switch history) is persisted to `ha-orchestrator.ha.json` (debounced) and restored on startup; orchestrate runs are recorded to `ha-orchestrator.runs.jsonl`.
+- Config is written to the first writable location among the current session workspace / `DSH_HOME`, the sandbox `workspace-write` writable root, and the fs default cwd (file `dsh-ha-orchestrator.config.json`, backup `dsh-ha-orchestrator.config.backup.json`), and looked up in the same order and restored on startup.
+- HA runtime state (quarantine, failure counters, rotation cursors, switch history) is persisted to `dsh-ha-orchestrator.ha.json` (debounced) and restored on startup; orchestrate runs are recorded to `dsh-ha-orchestrator.runs.jsonl`.
 - All `/ha` and `/orchestrate` slash commands are listed in the [Commands](#commands) section above.
 
 ## License

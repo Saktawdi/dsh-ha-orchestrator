@@ -1,4 +1,4 @@
-# ha-orchestrator 配置参考
+# dsh-ha-orchestrator 配置参考
 
 本文档完全依据代码事实编写。默认值与钳制（sanitize/clamp）规则的**唯一事实来源**是
 `src/config.ts`（`defaultConfig` 与 `sanitizeConfig`）；字段的作用说明参照
@@ -17,10 +17,10 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `ha-orchestrator.config.json` | 主配置持久化文件。每次 `stateSet` / `stateImport` / 配方保存成功都会整体写盘（`JSON.stringify(state.config, null, 2)`）。 |
-| `ha-orchestrator.config.backup.json` | 备份文件。写主文件前，若存在旧配置则先把旧内容备份到该文件；备份失败不影响主写。 |
-| `ha-orchestrator.ha.json` | HA 运行态（隔离 / 失败计数 / 游标 / 历史）。防抖 500ms 写盘；全部为空时不生成。重启后自动恢复。 |
-| `ha-orchestrator.runs.jsonl` | 每次 orchestrate run 的记录，JSONL 追加写；磁盘保留最近 200 条、内存保留最近 50 条。 |
+| `dsh-ha-orchestrator.config.json` | 主配置持久化文件。每次 `stateSet` / `stateImport` / 配方保存成功都会整体写盘（`JSON.stringify(state.config, null, 2)`）。 |
+| `dsh-ha-orchestrator.config.backup.json` | 备份文件。写主文件前，若存在旧配置则先把旧内容备份到该文件；备份失败不影响主写。 |
+| `dsh-ha-orchestrator.ha.json` | HA 运行态（隔离 / 失败计数 / 游标 / 历史）。防抖 500ms 写盘；全部为空时不生成。重启后自动恢复。 |
+| `dsh-ha-orchestrator.runs.jsonl` | 每次 orchestrate run 的记录，JSONL 追加写；磁盘保留最近 200 条、内存保留最近 50 条。 |
 
 ### 1.2 多目录降级
 
@@ -76,7 +76,7 @@
 | `burstWindowMs` | number | `60000` | `Math.max(0, …)` | 失败计数滑动窗口（毫秒）。窗口内多次失败才计入阈值，超出窗口计数重置；0 = 关闭（计数到冷却到期才过期）。 |
 | `providerThreshold` | number | `2` | `Math.max(0, …)` | Provider 级熔断阈值。同一 provider 隔离的模型数达到该值后熔断整个 provider（`PROVIDER_CIRCUIT`）；0 = 关闭。 |
 | `probeEnabled` | boolean | `true` | `!!value` | 冷却到期后是否用最小成本调用（`maxTokens=1`）真实探测模型恢复；成功解除隔离（circuit-closed），失败延长冷却并再次探测（间隔 `[60s, 5min]`）。 |
-| `degradeContextWindow` | boolean | `false` | `!!value` | `CONTEXT_WINDOW_EXCEEDED` 时去掉 `reasoningEffort` 重试原模型（上下文超长降级）。 |
+| `degradeContextWindow` | boolean | `false` | `!!value` | `CONTEXT_WINDOW_EXCEEDED` 时去掉 `reasoningEffort` 重试原模型（上下文超长降级）；关闭时 HA 不接管该错误，直接放行给平台压缩/重试，**不会切备用**。 |
 
 ### 2.2 `orch` — 子智能体编排
 
@@ -135,7 +135,7 @@
 ### 2.5 `ctx` — 上下文注入
 
 设置页「系统」卡片内的上下文注入区对应本节。消费点：`systemPrompt` 服务注入段
-`ha-orchestrator:context`（order 40）。
+`dsh-ha-orchestrator:context`（order 40）。
 
 | 字段 | 类型 | 默认值 | 钳制规则 | 作用 |
 | --- | --- | --- | --- | --- |

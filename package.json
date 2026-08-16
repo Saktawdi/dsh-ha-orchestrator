@@ -1,6 +1,6 @@
 {
-  "name": "ha-orchestrator",
-  "version": "0.11.1",
+  "name": "dsh-ha-orchestrator",
+  "version": "0.11.2",
   "description": "Model high-availability failover + subagent orchestration (fanout/pipeline/supervisor) for DeepSeek Harness",
   "keywords": [
     "dsh",
@@ -35,7 +35,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Saktawdi/ha-orchestrator.git"
+    "url": "https://github.com/Saktawdi/dsh-ha-orchestrator.git"
   },
   "type": "module",
   "main": "lib/index.js",
