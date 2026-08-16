@@ -52,9 +52,22 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 需要：[DeepSeek Harness](https://github.com/deepseek-ai/dsh)（web profile）。无构建步骤，无运行时依赖。
 
-### 方法一：一条命令安装（推荐）
+### 方法一：npm 一条命令安装（推荐）
 
-需要 PATH 里有 pnpm：
+本包已发布到 npm（包名 `dsh-ha-orchestrator`）：
+
+1. 执行一条命令：
+
+   ```sh
+   dsh plugin --profile web add dsh-ha-orchestrator
+   ```
+
+2. 因为本包声明了 `dsh.bundle.patch`，`dsh plugin add` 会自动把 **dsh-ha-orchestrator** 加进 `dsh.profile.bundles` 并应用 `cordis.patch.yml`，无需手写组合行。
+3. 无需重启：bundle patch 层会被热加载（Cordis HMR），插件在运行中的进程里直接生效。刷新浏览器页面即可看到配置页。插件同样随进程启动自动加载，重启后依然生效。
+
+### 方法二：本地仓库安装（开发用）
+
+用于开发或测试未发布版本。需要 PATH 里有 pnpm：
 
 1. 执行一条命令：
 
@@ -65,7 +78,7 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 2. 因为本包声明了 `dsh.bundle.patch`，`dsh plugin add` 会自动把 **dsh-ha-orchestrator** 加进 `dsh.profile.bundles` 并应用 `cordis.patch.yml`，无需手写组合行。
 3. 无需重启：bundle patch 层会被热加载（Cordis HMR），插件在运行中的进程里直接生效。刷新浏览器页面即可看到配置页。插件同样随进程启动自动加载，重启后依然生效。
 
-### 方法二：手动安装（无需 pnpm）
+### 方法三：手动安装（无需 pnpm）
 
 1. 把本仓库复制到 DSH profile 的 node_modules 下：`~/.dsh/profiles/web/node_modules/dsh-ha-orchestrator`
 2. 在组合文件 `~/.dsh/profiles/web/cordis.patch.yml` 中加入：
@@ -77,33 +90,6 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
    ```
 
 3. 无需重启：profile 的 patch 层会被热加载（Cordis HMR），插件在运行中的进程里直接生效。刷新浏览器页面即可看到配置页。插件同样随进程启动自动加载，重启后依然生效。
-
-### 方法三：让 AI 帮你装
-
-1. 在 DSH 里切换到**创造模式**。
-2. 把仓库链接连同一段提示词发给你的 AI（可参考下述提示词）：
-
-   > 把 **dsh-ha-orchestrator** 插件（https://github.com/Saktawdi/dsh-ha-orchestrator）安装到 DSH 的 **web profile**（`$DSH_HOME/profiles/web`，默认 `~/.dsh/profiles/web`）。本包**现在声明**了 `dsh.bundle.patch`，所以 `dsh plugin add` 会自动更新 `dsh.profile.bundles` 并应用 `cordis.patch.yml`；不要再手动 insert 组合行，也不要改 `cordis.yml`（启动时会被重写）。如果旧版本（改名前的包）曾经手动 insert 过 id 为 `ha-orchestrator` 的行，请删除该 insert 段，让 bundle patch 层接管。步骤：
-   >
-   > 1. **把包装成真实目录，绝不要用软链接/junction。** Node 的 ESM loader 会把模块解析到真实路径，软链接指向插件源码目录后就找不到它的 peer 依赖（`@deepseek-ai/dsh-tools`、`react` 等）；只有 `$DSH_HOME/profiles/node_modules`（安装 fallback）提供这些包。推荐命令（需要 PATH 里有 pnpm）：
-   >
-   >    ```sh
-   >    dsh plugin --profile web add "file:<插件仓库绝对路径>"
-   >    ```
-   >
-   >    `file:` 协议会把内容快照装进 profile 的 `node_modules` 并记录进 `package.json`（之后执行 `pnpm install` 也不会被清掉）。裸路径或 `link:` 会创建软链接，**运行时必然失败**。如果机器上没有 pnpm，就手动把仓库（排除 `.git` 和 `node_modules`）复制到 `~/.dsh/profiles/web/node_modules/dsh-ha-orchestrator/`，并在 profile 的 `package.json` 里补上 `file:` 依赖。
-   >
-   > 2. **无需手写组合行** —— 声明的 `dsh.bundle.patch`（`cordis.patch.yml`）会被自动应用。只需确认 `dsh.profile.bundles` 现在列出了 **dsh-ha-orchestrator**。
-   >
-   > 3. **无需重启进程** —— bundle patch 层会被热加载（Cordis HMR），插件直接生效。用户只需**刷新浏览器页面**让客户端半部（设置 →「HA 与编排」）加载。
-   >
-   > 4. **完成前必须验证**：
-   >    - `dsh --profile web --dump-config` 能看到 `dsh-ha-orchestrator` 行。
-   >    - 解析探测：在 profile 目录放一个临时 `probe.mjs`，内容为 `await import('dsh-ha-orchestrator')`，应输出 `apply,default,inject,name`（验完删除）。
-   >    - 会话里能看到 `orchestrate` 和 `list-subagents` 工具；调用 `list-subagents` 能返回已配置的子智能体清单。
-   >    - 失败时修根因（包的位置、patch 语法、行 id），重新保存 patch 文件触发 watcher 重载——**不要**靠重启进程"修复"。
-
-3. 安装后插件随 DSH 启动自动加载，重启后依然生效。
 
 > **版本说明：** [v0.1.0](https://github.com/Saktawdi/dsh-ha-orchestrator/releases/tag/v0.1.0) 是上一代动态版（经 `cordis_define` 按会话加载），仅作功能预览；从 v0.2.0 起为静态插件，随 DSH 启动自动加载，本 README 描述的是 v0.2.1 及之后的版本。从引入 bundle patch 的版本起，推荐使用方法一（一条命令安装）安装。
 

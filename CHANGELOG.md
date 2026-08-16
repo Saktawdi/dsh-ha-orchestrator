@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.11.3] - 2026-08-16
+
+### Changed
+- README 安装方式调整（中英同步）：包已发布 npm，方法一改为 **npm 一条命令安装**（`dsh plugin --profile web add dsh-ha-orchestrator`）；原 `file:` 本地安装降为方法二（开发用）；原手动复制为方法三；**删除「让 AI 帮你装」方法**（不再需要把安装提示词发给 AI）。
+- npm registry 发布 `dsh-ha-orchestrator@0.11.2`，README 随 0.11.3 同步更新。
+
 ## [0.11.2] - 2026-08-16
 
 ### Changed
