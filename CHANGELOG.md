@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.11.4] - 2026-08-16
+
+### Added
+- 上下文注入新增 `ctx.injectSubagents` 开关（默认 `false`）：子智能体默认不再获得插件上下文，避免子代理被自动编排引导反复“层层外包”；开启后子智能体与主智能体行为一致。
+- `orchestrate` 增加硬性嵌套防护：子智能体（`session.header.origin === 'subagent'` 或 `delegationDepth > 0`）直接调用 `orchestrate` 会被拒绝，防止绕过 `maxAgents` / `budgetAgents` 等限制。
+
 ## [0.11.3] - 2026-08-16
 
 ### Changed

@@ -90,6 +90,8 @@ export interface LangConfig {
 export interface CtxConfig {
   enabled: boolean
   text: string
+  /** 是否也向子智能体注入同一段上下文（默认 false：子智能体不注入，避免层层外包）。 */
+  injectSubagents: boolean
 }
 
 /** 完整插件配置。 */
@@ -157,6 +159,8 @@ export const defaultConfig: Config = {
     // 上下文注入：向系统提示词注入插件上下文（含自动编排引导 + 自定义文本）
     enabled: true,
     text: '',
+    // 默认不注入子智能体：防止子代理也拿到“自动发起编排”的提示，形成层层外包
+    injectSubagents: false,
   },
 }
 
@@ -263,6 +267,7 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
       const ctxCfg = { ...(baseCfg.ctx || {}), ...(raw.ctx as RawSection) }
       ctxCfg.enabled = asBool(ctxCfg.enabled)
       ctxCfg.text = asString(ctxCfg.text)
+      ctxCfg.injectSubagents = asBool(ctxCfg.injectSubagents)
       next.ctx = ctxCfg as CtxConfig
     }
   }

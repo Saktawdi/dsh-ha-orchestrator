@@ -68,9 +68,15 @@ export interface SubagentProvider {
   start(provider: string, request: SubagentRequest): Promise<SubagentRun>
 }
 
+/** systemPrompt 段落求值上下文（最小形状；真实 dsh-system-prompt 还带 agent/scope）。 */
+export interface PromptAssembleContextLike {
+  agent?: unknown
+  scope?: unknown
+}
+
 /** systemPrompt 服务（段落注册）。 */
 export interface SystemPromptService {
-  section(opts: { name: string; order: number; text: () => string }): () => void
+  section(opts: { name: string; order: number; text: string | ((context?: PromptAssembleContextLike) => string) }): () => void
 }
 
 /** settings 服务（命名空间读取）。 */

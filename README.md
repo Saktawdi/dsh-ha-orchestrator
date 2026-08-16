@@ -40,6 +40,8 @@ If a particular run does not orchestrate on its own, just say "use orchestration
 
 You can also turn off the auto-triggering: in Settings → "HA 与编排" → System card, turn off **context injection**. The model then only orchestrates when you ask for it, for example "use the dsh-ha-orchestrator plugin".
 
+Subagents do **not** receive this context injection by default, preventing them from being prompted to start nested orchestration. If you want subagents to see the same context, enable **Also inject into subagents** in the System card.
+
 ### Custom subagents
 
 Define reusable subagents in the settings page: name, provider/model, description, and system prompt. Tasks pick them by name, and the model can look up the list at any time. The "AI Generate" button takes a one-sentence requirement and has the current model fill in the full definition.

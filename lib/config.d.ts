@@ -75,6 +75,8 @@ export interface LangConfig {
 export interface CtxConfig {
     enabled: boolean;
     text: string;
+    /** 是否也向子智能体注入同一段上下文（默认 false：子智能体不注入，避免层层外包）。 */
+    injectSubagents: boolean;
 }
 /** 完整插件配置。 */
 export interface Config {

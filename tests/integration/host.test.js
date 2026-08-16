@@ -256,24 +256,34 @@ test('装配：工具/上下文注入/事件/RPC 服务全部注册', async () =
   assert.ok(snap.i18n.keys > 0)
 })
 
-test('上下文注入求值：自定义文本 / 默认引导 / 关闭', async () => {
+test('上下文注入求值：自定义文本 / 默认引导 / 子智能体默认不注入 / 关闭', async () => {
   const { ctx } = makeEnv()
   await mountPlugin(ctx)
   const section = ctx.sections[0]
   const rpc = ctx.get('haOrchestrator')
+  const subagentAgent = { id: 'child', session: { header: { origin: 'subagent', delegationDepth: 1 } } }
 
   // 默认：无自定义文本、orch.enabled -> 自动编排引导
   const hint = section.text()
   assert.ok(hint.length > 0)
   assert.ok(hint.indexOf('dsh-ha-orchestrator') >= 0 || hint.indexOf('orchestrate') >= 0)
+  // 子智能体默认不注入（兼容 context.agent 与 context.scope 两种组装上下文）
+  assert.equal(section.text({ agent: subagentAgent }), '')
+  assert.equal(section.text({ scope: subagentAgent }), '')
 
-  // 自定义文本优先
+  // 自定义文本优先；子智能体默认仍不注入
   await rpc.stateSet({ patch: { ctx: { text: 'CUSTOM-TEXT-123' } } })
   assert.equal(section.text(), 'CUSTOM-TEXT-123')
+  assert.equal(section.text({ agent: subagentAgent }), '')
 
-  // 关闭 -> 空串
+  // 开启“同时注入子智能体”后，子智能体也获得同一段上下文
+  await rpc.stateSet({ patch: { ctx: { injectSubagents: true } } })
+  assert.equal(section.text({ agent: subagentAgent }), 'CUSTOM-TEXT-123')
+
+  // 关闭 -> 空串（主智能体与子智能体都为空）
   await rpc.stateSet({ patch: { ctx: { enabled: false } } })
   assert.equal(section.text(), '')
+  assert.equal(section.text({ agent: subagentAgent }), '')
 })
 
 test('HA 事件流：直通 -> 失败隔离 -> 请求切换备用', async () => {
@@ -412,6 +422,26 @@ test('orchestrate：未知子智能体名报错且不执行', async () => {
     /ghost/,
   )
   assert.equal(ctx.subagentCalls.length, 0, '校验失败不启动子智能体')
+})
+
+test('orchestrate：子智能体禁止嵌套编排，防止层层外包绕过限制', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  const subagentAgents = [
+    { id: 'child-1', session: { header: { origin: 'subagent' } } },
+    { id: 'child-2', session: { header: { origin: 'subagent', delegationDepth: 3 } } },
+    { id: 'child-3', session: { header: { delegationDepth: 2 } } },
+  ]
+
+  for (const agent of subagentAgents) {
+    await assert.rejects(
+      toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'x', prompt: 'P' }] }, agent),
+      /子智能体不允许|subagents cannot start nested/i,
+    )
+  }
+
+  assert.equal(ctx.subagentCalls.length, 0, '子智能体发起编排被拒绝，不产生任何子智能体调用')
 })
 
 test('list-subagents：返回配置中的自定义子智能体清单', async () => {

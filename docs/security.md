@@ -164,6 +164,7 @@
 - **上下文注入有开关**：`ctx.enabled` 默认 `true`，但注入内容默认**仅引导文本**
   （`t('orch.hintSection')`，含【dsh-ha-orchestrator 插件上下文】标记便于检索）；自定义文本
   `ctx.text` 默认空。关闭时 `text()` 返回空串，组装器丢弃该段落，模型不获得任何插件上下文。
+- **子智能体默认不注入上下文**：`ctx.injectSubagents` 默认 `false`，避免子代理被自动编排引导反复“层层外包”；如确需让子智能体看到同一段上下文，可在设置页开启。`orchestrate` 还会在运行时拒绝子智能体发起的嵌套编排（依据 `session.header.origin` / `delegationDepth`），作为硬性防线。
 - **事件监听全部经 `ctx.effect` 注册**：工具（`toolDisposes`）、systemPrompt 段落
   （`contextInjectDispose`）、`/ha` 命令、`/orchestrate` 命令均在 `ctx.on/effect` 生命周期内注册，
   **卸载即清理**，不留 `zombie` 注册（Cordis 管理组合行生命周期）。

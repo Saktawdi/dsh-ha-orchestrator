@@ -72,6 +72,7 @@ import type {
   SubagentProvider,
   SubagentRun,
   SystemPromptService,
+  PromptAssembleContextLike,
   SettingsService,
   AgentsService,
   AgentLike,
@@ -123,7 +124,7 @@ interface InjectionStatus {
   registered: boolean
   order: number
   reason: string
-  lastEval: { mode: string; chars: number } | null
+  lastEval: { mode: string; chars: number; subagent?: boolean } | null
 }
 
 /** stateGet / stateSet 返回的状态快照。 */
@@ -1112,6 +1113,16 @@ async function apply(ctx: Context): Promise<void> {
   })
 
   // ================= 子智能体编排 =================
+  // 禁止子智能体再次发起 orchestrate：否则会形成“子代理再外包子代理”的嵌套
+  // 链条，绕过 maxAgents/budgetAgents 等单次编排限制。官方会话元数据里
+  // origin='subagent' 或 delegationDepth>0 都表示当前 Agent 是子智能体。
+  function isSubagentAgent(agent: unknown): boolean {
+    if (!agent || typeof agent !== 'object') return false
+    const a = agent as { session?: { header?: { origin?: string; delegationDepth?: number } } }
+    const header = a.session && a.session.header
+    if (!header) return false
+    return header.origin === 'subagent' || Number(header.delegationDepth || 0) > 0
+  }
   function resolveProvider(): string {
     const subagents = getService<SubagentProvider>(ctx, 'subagents')
     if (!subagents) throw new Error(t('orch.errNoService'))
@@ -1256,6 +1267,7 @@ async function apply(ctx: Context): Promise<void> {
           const cfg = state.config.orch
           if (!cfg.enabled) throw new Error(t('orch.errDisabled'))
           if (!exec.agent) throw new Error(t('orch.errNoAgentCtx'))
+          if (isSubagentAgent(exec.agent)) throw new Error(t('orch.errNoNested'))
           const subagents = getService<SubagentProvider>(ctx, 'subagents')
           if (!subagents) throw new Error(t('orch.errNoService'))
           // ---- 全局并发预算 ----
@@ -1613,7 +1625,11 @@ async function apply(ctx: Context): Promise<void> {
   //     让模型在适合并行拆解/多阶段/评审把关的任务上自动调用 orchestrate，
   //     无需用户显式说“使用 dsh-ha-orchestrator”。
   //   - 关闭：整段为空（组装器丢弃），模型不获得任何插件上下文。
-  // text 为函数：每次组装时求值，跟随当前语言与最新配置。
+  //   - 子智能体默认不注入（config.ctx.injectSubagents=false）：避免子代理也拿到
+  //     “自动发起编排”的提示，形成层层外包、绕过 maxAgents/budgetAgents。
+  //     设置页可开关“同时注入子智能体”，开启后与主智能体行为一致。
+  // text 为函数：每次组装时求值，跟随当前语言与最新配置，并可按组装上下文
+  // （主智能体/子智能体）决定是否注入。
   // 段落 order 取 40：紧随部署 persona（0）之后、plan-mode（50）与工具引导
   // （100–199）之前，保证自动编排引导处于提示词最醒目位置（原 500 沉底，
   // 模型几乎注意不到，是“从不自动触发编排”的主因之一）。
@@ -1647,28 +1663,34 @@ async function apply(ctx: Context): Promise<void> {
       contextInjectDispose = sp.section({
         name: 'dsh-ha-orchestrator:context',
         order: 40,
-        text: () => {
+        text: (context?: PromptAssembleContextLike) => {
           const ctxCfg = state.config && state.config.ctx
           if (!ctxCfg || !ctxCfg.enabled) {
             injectionStatus.lastEval = { mode: 'off', chars: 0 }
             debugLog('debug', 'ctx.inject.eval', '上下文注入求值：已关闭，不注入', { enabled: false })
             return ''
           }
+          const isSub = isSubagentAgent(context && context.agent ? context.agent : (context && context.scope))
+          if (isSub && !ctxCfg.injectSubagents) {
+            injectionStatus.lastEval = { mode: 'empty', chars: 0, subagent: true }
+            debugLog('debug', 'ctx.inject.eval', '上下文注入求值：子智能体默认不注入', { enabled: true, subagent: true, injectSubagents: false })
+            return ''
+          }
           const custom = String(ctxCfg.text || '').trim()
           if (custom) {
-            injectionStatus.lastEval = { mode: 'custom', chars: custom.length }
-            debugLog('debug', 'ctx.inject.eval', '上下文注入求值：自定义内容', { enabled: true, mode: 'custom', chars: custom.length })
+            injectionStatus.lastEval = { mode: 'custom', chars: custom.length, subagent: isSub || undefined }
+            debugLog('debug', 'ctx.inject.eval', '上下文注入求值：自定义内容', { enabled: true, mode: 'custom', chars: custom.length, subagent: isSub })
             return custom
           }
           const orch = state.config && state.config.orch
           if (orch && orch.enabled) {
             const hint = t('orch.hintSection')
-            injectionStatus.lastEval = { mode: 'default', chars: hint.length }
-            debugLog('debug', 'ctx.inject.eval', '上下文注入求值：默认自动编排引导', { enabled: true, mode: 'fallback', language: langState.active })
+            injectionStatus.lastEval = { mode: 'default', chars: hint.length, subagent: isSub || undefined }
+            debugLog('debug', 'ctx.inject.eval', '上下文注入求值：默认自动编排引导', { enabled: true, mode: 'fallback', language: langState.active, subagent: isSub })
             return hint
           }
-          injectionStatus.lastEval = { mode: 'empty', chars: 0 }
-          debugLog('debug', 'ctx.inject.eval', '上下文注入求值：无可用内容', { enabled: true, mode: 'empty' })
+          injectionStatus.lastEval = { mode: 'empty', chars: 0, subagent: isSub || undefined }
+          debugLog('debug', 'ctx.inject.eval', '上下文注入求值：无可用内容', { enabled: true, mode: 'empty', subagent: isSub })
           return ''
         },
       })

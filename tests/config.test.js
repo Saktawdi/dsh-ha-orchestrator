@@ -43,6 +43,7 @@ test('defaultConfig 深层结构正确', () => {
 
   assert.equal(defaultConfig.ctx.enabled, true)
   assert.equal(defaultConfig.ctx.text, '')
+  assert.equal(defaultConfig.ctx.injectSubagents, false)
 })
 
 test('patch 为 null/undefined/非对象时返回空对象且不改变 base', () => {
@@ -197,11 +198,13 @@ test('lang.mode 非法值回 auto，zh/en 保留', () => {
   assert.equal(sanitizeConfig({ lang: { mode: null } }, defaultConfig).lang.mode, 'auto')
 })
 
-test('ctx.text 字符串化，enabled 布尔化', () => {
-  const res = sanitizeConfig({ ctx: { text: 'hello', enabled: 1 } }, defaultConfig)
+test('ctx.text 字符串化，enabled/injectSubagents 布尔化', () => {
+  const res = sanitizeConfig({ ctx: { text: 'hello', enabled: 1, injectSubagents: 1 } }, defaultConfig)
   assert.equal(res.ctx.text, 'hello')
   assert.equal(res.ctx.enabled, true)
-  assert.equal(sanitizeConfig({ ctx: { text: 123 } }, defaultConfig).ctx.text, '123')
+  assert.equal(res.ctx.injectSubagents, true)
+  assert.equal(sanitizeConfig({ ctx: { text: 123, injectSubagents: 'y' } }, defaultConfig).ctx.text, '123')
+  assert.equal(sanitizeConfig({ ctx: { injectSubagents: 0 } }, defaultConfig).ctx.injectSubagents, false)
 })
 
 test('只提交 patch.ha 时 orch/debug/lang/ctx 不进入结果、base 原样保持', () => {
