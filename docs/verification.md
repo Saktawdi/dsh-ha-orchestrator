@@ -109,7 +109,7 @@ npm run typecheck && npm run build && npm run check && npm test && npm run verif
    语言解析、装饰器运行时与 initializer）。
 6. **npm pack dry-run** — `npm pack --dry-run --json` 列出打包文件，确认 `cordis.patch.yml`、
    `.language/{zh,en}.json`、`lib/*.js`、`lib/index.d.ts`、`src/*.ts`、`README.md`、
-   `README.zh-CN.md`、`CHANGELOG.md` 均在内。
+   `README.en.md`、`CHANGELOG.md` 均在内。
 
 ---
 
@@ -157,7 +157,7 @@ CI 不执行 `npm publish`；发布动作由后述发布流程人工/带环境�
    - `.language/`（zh/en 语言包）
    - `cordis.patch.yml`（bundle patch）
    - `docs/`
-   - `README*`（`README.md`、`README.zh-CN.md`）
+   - `README*`（`README.md`、`README.en.md`）
    - `CHANGELOG.md`
    - `LICENSE`
    - 由 npm 自动纳入的 `package.json`

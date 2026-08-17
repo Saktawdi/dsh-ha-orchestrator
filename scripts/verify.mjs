@@ -125,7 +125,7 @@ await check('npm pack dry-run', () => {
   const stdout = execFileSync(npmBin, ['pack', '--dry-run', '--json'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], shell: true })
   const info = JSON.parse(stdout)
   const files = (info[0] && info[0].files || []).map((f) => f.path)
-  for (const required of ['cordis.patch.yml', '.language/zh.json', '.language/en.json', 'lib/index.js', 'lib/client.js', 'lib/config.js', 'lib/ha-core.js', 'lib/orch-runner.js', 'lib/remote.js', 'lib/index.d.ts', 'src/index.ts', 'src/config.ts', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md']) {
+  for (const required of ['cordis.patch.yml', '.language/zh.json', '.language/en.json', 'lib/index.js', 'lib/client.js', 'lib/config.js', 'lib/ha-core.js', 'lib/orch-runner.js', 'lib/remote.js', 'lib/index.d.ts', 'src/index.ts', 'src/config.ts', 'README.md', 'README.en.md', 'CHANGELOG.md']) {
     assert(files.includes(required), `missing packed file: ${required}`)
   }
   // 本地开发机密文档（docs/local/）绝不进入发布包

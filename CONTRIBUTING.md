@@ -141,7 +141,7 @@ chore: 升级 peerDependencies 至 rc.6 类型线
 - 发布前先更新 `CHANGELOG.md`（遵循 Keep a Changelog 风格，含版本号与日期），并核对 `docs/` 文档（架构 / 配置 / 兼容矩阵）。
 - 以 `npm run prepublishOnly`（或按顺序执行 `npm run typecheck`、`npm run build`、`npm run check`、`npm test`、`npm run verify`）作为发布前门禁。
 - 打 `git tag`（`v<version>`）并创建 GitHub Release，附带 `npm pack` 产物（`.tgz`）。
-- npm 发布侧：包名为 `dsh-ha-orchestrator`（public access），产物经 `files` 字段包含 `lib/`、`cordis.patch.yml`、`.language/`、`README.md`、`README.zh-CN.md`、`CHANGELOG.md`、`docs/`、`LICENSE`。
+- npm 发布侧：包名为 `dsh-ha-orchestrator`（public access），产物经 `files` 字段包含 `lib/`、`cordis.patch.yml`、`.language/`、`README.md`、`README.en.md`、`CHANGELOG.md`、`docs/`、`LICENSE`。
 
 **详细发布 / 校验步骤见 [`docs/verification.md`](docs/verification.md)**（含产物完整性、离线冒烟与发布前检查清单）。
 
