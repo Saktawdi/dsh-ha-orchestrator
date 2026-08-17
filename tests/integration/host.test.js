@@ -223,6 +223,11 @@ test('装配：工具/上下文注入/事件/RPC 服务全部注册', async () =
   assert.equal(ctx.registered[0].name, 'orchestrate')
   assert.equal(ctx.registered[1].name, 'list-subagents')
 
+  // 回归：orchestrate 输出 schema 必须声明 agentId（additionalProperties:false 会拒绝未声明字段）
+  const orchRunsSchema = ctx.registered[0].output.schema.properties.runs.items
+  assert.equal(orchRunsSchema.additionalProperties, false)
+  assert.ok(orchRunsSchema.properties.agentId, 'output schema 声明 agentId')
+
   // 上下文注入段落（order 40）
   assert.equal(ctx.sections.length, 1)
   assert.equal(ctx.sections[0].name, 'dsh-ha-orchestrator:context')

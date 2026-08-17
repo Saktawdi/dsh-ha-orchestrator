@@ -1547,12 +1547,13 @@ async function apply(ctx: Context): Promise<void> {
                   status: { type: 'string', required: true },
                   output: { type: 'string', required: true },
                   lastKey: { type: 'string' },
+                  agentId: { type: 'string' },
                 },
               },
             },
           },
         },
-        render(args: unknown, value: { summary?: string; runs?: Array<{ id?: string; label?: string; agent?: string; status?: string; output?: string; lastKey?: string }> } | null | undefined): ReturnType<typeof renderRunOutput> {
+        render(args: unknown, value: { summary?: string; runs?: Array<{ id?: string; label?: string; agent?: string; status?: string; output?: string; lastKey?: string; agentId?: string }> } | null | undefined): ReturnType<typeof renderRunOutput> {
           const oc = state.config.orch
           return renderRunOutput(value, {
             runOutputLimit: Number(oc.renderRunLimit) > 0 ? Number(oc.renderRunLimit) : undefined,
