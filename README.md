@@ -1,7 +1,5 @@
 ![HA Orchestrator — model recovery and multi-agent orchestration](docs/hero-banner.png)
 
-# HA Orchestrator
-
 <p align="center">
   <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.0-4d6bfe?style=flat-square" alt="Version" height="20"></a>
   <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="Platform" height="20"></a>
@@ -10,6 +8,8 @@
   <a href="docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="Orchestration modes" height="20"></a>
   <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin" height="20"></a>
 </p>
+
+# HA Orchestrator
 
 HA Orchestrator is a plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) (dsh):
 

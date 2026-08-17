@@ -14,6 +14,11 @@ All notable changes to this project are documented in this file.
 - **调研工件 markdown 落盘**：每个 orchestrate run 结束时生成 `dsh-ha-orchestrator.run-<runId>.md`（子任务完整输出不截断 + lastKey + summary），便于直接阅读/归档；已加入 `.gitignore`。
 - **调研拆分引导**：`orch.hintSection` / `orch.toolAutoUse`（中英）追加「多对象调研按对象逐个拆 tasks、子任务要求带来源 URL 证据、合并保留全部出处」。
 
+### Added — 失败重试零浪费（自动续跑 + 部分完成提示）
+- **自动续跑（autoResume）**：`orchestrate` 未显式传 `resume` 时，自动查找同一会话最近 30 分钟内、同模式、同任务（id/label/prompt 签名一致且实际执行 agent 一致）且部分完成的 run；命中则复用其已完成子任务、只跑剩余部分，并写 `resumedFrom` 指向原 run。新配置 `orch.autoResume`（默认开启，设置页可关）。解决「4/6 已完成但整体失败，用户重试又把 6 个全量重做」的时间/token 浪费。
+- **部分完成错误提示**：当 run 因异常中止但已有部分子任务完成时，抛出的错误信息末尾附带 `[orchestrate runId: ...]` 与 `resume: "runId"` 提示及已完成任务清单，模型重试时可直接显式复用；即使模型忽略，下一次调用也会被自动续跑兜底。
+- **失败留痕任务定义修复**：失败 run 现在记录本次实际尝试的任务定义（resume 场景回退到原 run 完整任务定义），不再只读 `args.tasks`——修复 preset 执行失败时 `tasks` 为空、导致后续 resume/自动续跑无法匹配的问题。
+
 ### Added — 设置页视觉重构（`lib/client.js`）
 - **概览横幅**：页面顶部一眼可读的仪表盘头——HA 启用状态、当前默认模型、备用模型数、编排状态与活动 run 数（复用 `stateGet` + `orchActive` 轻量轮询，无新 RPC）。
 - **Run 历史可视化**：诊断卡「最近运行」从静态表格升级为可展开条目——每条 run 显示模式徽章（图标+文字）、runId、状态（完成/部分失败/已中止）、子任务数、耗时与时间；展开后显示子任务表（状态图标/label/agent/status/lastKey）与结果摘要。

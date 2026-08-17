@@ -8,6 +8,8 @@ import {
   findUnknownAgents,
   truncateTasks,
   cleanTasks,
+  taskSignature,
+  sameTaskList,
   resolveConcurrency,
   resolveMode,
   buildRunPrompt,
@@ -146,6 +148,27 @@ test('truncateTasks: maxAgents 非法回退 8', () => {
 })
 test('truncateTasks: 少于 limit 时保留全部', () => {
   assert.deepEqual(truncateTasks([1, 2], 8), [1, 2])
+})
+
+// ---------------------------------------------------------------------------
+// taskSignature / sameTaskList
+// ---------------------------------------------------------------------------
+test('taskSignature: 只取 id/label/prompt，忽略 agent 并规整空白', () => {
+  assert.equal(taskSignature(null), '')
+  assert.equal(taskSignature(undefined), '')
+  assert.equal(taskSignature({ prompt: ' P ' }), JSON.stringify(['', '', 'P']))
+  assert.equal(taskSignature({ id: 'a', label: 'L', prompt: 'p', agent: 'x' }), JSON.stringify(['a', 'L', 'p']))
+  assert.equal(taskSignature({ id: 'a', label: 'L', prompt: 'p', agent: 'y' }), taskSignature({ id: 'a', label: 'L', prompt: 'p', agent: 'x' }))
+})
+test('sameTaskList: 按顺序比较同任务列表', () => {
+  const a = [{ id: 'a', prompt: 'p1' }, { id: 'b', prompt: 'p2' }]
+  assert.equal(sameTaskList(a, a), true)
+  assert.equal(sameTaskList(a, [{ id: 'a', prompt: 'p1' }, { id: 'b', prompt: 'p2' }]), true)
+  assert.equal(sameTaskList(a, [{ id: 'b', prompt: 'p2' }, { id: 'a', prompt: 'p1' }]), false)
+  assert.equal(sameTaskList(a, [{ id: 'a', prompt: 'changed' }, { id: 'b', prompt: 'p2' }]), false)
+  assert.equal(sameTaskList(a, null), false)
+  assert.equal(sameTaskList(null, null), false)
+  assert.equal(sameTaskList([], []), true)
 })
 
 // ---------------------------------------------------------------------------

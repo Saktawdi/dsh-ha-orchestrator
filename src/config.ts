@@ -88,6 +88,8 @@ export interface OrchConfig {
   renderTotalLimit: number
   /** 子智能体委托深度平台级硬上限（0 = 关闭；1 = 子智能体不能再委托）。 */
   maxDepth: number
+  /** 重试相同任务时自动复用最近一次部分完成的 run（同会话、同任务、30 分钟内）。 */
+  autoResume: boolean
 }
 
 /** 调试配置节。 */
@@ -159,6 +161,8 @@ export const defaultConfig: Config = {
     renderTotalLimit: 60000,
     // 委托深度兜底默认关闭（0）；开启 1 可从平台层禁止子智能体再委托
     maxDepth: 0,
+    // 自动续跑：重试相同任务时复用最近一次部分完成 run 的已完成子任务（省钱省时）
+    autoResume: true,
     agents: [
       {
         name: 'reviewer',
@@ -287,6 +291,7 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
       orch.renderRunLimit = Math.max(0, Math.min(100000, Number(orch.renderRunLimit) || 0))
       orch.renderTotalLimit = Math.max(0, Math.min(400000, Number(orch.renderTotalLimit) || 0))
       orch.maxDepth = Math.max(0, Math.min(8, Number(orch.maxDepth) || 0))
+      orch.autoResume = asBool(orch.autoResume)
       orch.presets = Array.isArray(orch.presets)
         ? (orch.presets as unknown as RawSection[]).filter((p): p is RawSection => !!p && typeof p === 'object' && !!String(p.name || '').trim())
           .map((p: RawSection) => ({

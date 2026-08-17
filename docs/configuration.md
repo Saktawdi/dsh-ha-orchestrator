@@ -98,6 +98,7 @@
 | `renderRunLimit` | number | `8000` | `0..100000` | 工具结果中每个子任务输出的渲染字符上限；0 使用代码默认值。 |
 | `renderTotalLimit` | number | `60000` | `0..400000` | 工具结果整体渲染字符上限；0 使用代码默认值。 |
 | `maxDepth` | number | `0` | `0..8` | 下发给支持该能力的 provider 的委托深度硬上限；0 关闭。插件仍会独立拒绝子智能体再次调用 `orchestrate`。 |
+| `autoResume` | boolean | `true` | `!!value` | 自动续跑。未显式传 `resume` 时，自动查找同一会话最近 30 分钟内、同模式、同任务且部分完成的 run；命中则复用已完成子任务，只跑剩余部分。 | 
 | `agents` | array\<[AgentEntry](#agententry-自定义子智能体)> | 内置 `reviewer`、`researcher`、`research-merger` | 需 `name` 非空；`String` 化各字段 | 自定义子智能体清单。`list-subagents` 返回其 name/provider/model/description；`orchestrate` 中 `task.agent` / 顶层 `agent` / `supervisorAgent` / `reviewers` 按 name 解析。 |
 
 #### `OrchPreset`（配方）字段
@@ -237,6 +238,7 @@
     "renderRunLimit": 8000,
     "renderTotalLimit": 60000,
     "maxDepth": 0,
+    "autoResume": true,
     "presets": [
       {
         "name": "code-review",
@@ -307,6 +309,7 @@
 | orch.renderRunLimit | 8000 | 0 | 100000 |
 | orch.renderTotalLimit | 60000 | 0 | 400000 |
 | orch.maxDepth | 0 | 0 | 8 |
+| orch.autoResume | true | — | — |
 | orch.presets | [] | — | — |
 | orch.agents | [reviewer, researcher, research-merger] | 每项 name 必填 | — |
 | debug.enabled | false | — | — |

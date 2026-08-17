@@ -123,6 +123,20 @@ export declare function findUnknownAgents(args: OrchestrateArgsLike | null | und
     unknown: string[];
 };
 export declare function truncateTasks<T>(tasks: T[], maxAgents: number): T[];
+export declare function taskSignature(task: {
+    id?: string;
+    label?: string;
+    prompt?: string;
+} | null | undefined): string;
+export declare function sameTaskList(a: Array<{
+    id?: string;
+    label?: string;
+    prompt?: string;
+} | null | undefined> | null | undefined, b: Array<{
+    id?: string;
+    label?: string;
+    prompt?: string;
+} | null | undefined> | null | undefined): boolean;
 export declare function cleanTasks(tasks: unknown): TaskLike[];
 export declare function resolveConcurrency(argsConcurrency: number | null | undefined, cfgConcurrency: number | null | undefined, maxAgents: number): number;
 /** 编排模式。 */

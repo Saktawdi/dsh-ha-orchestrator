@@ -178,6 +178,29 @@ export function truncateTasks<T>(tasks: T[], maxAgents: number): T[] {
   return tasks.slice(0, limit)
 }
 
+// 任务签名：只取影响“任务是什么”的稳定字段（id/label/prompt），
+// 供 run 恢复 / 自动续跑做同任务匹配；不含 agent（agent 由调用方按解析后的
+// 实际执行角色单独比对，避免 raw agent 与 run 记录里已解析 agent 名不一致）。
+export function taskSignature(task: { id?: string; label?: string; prompt?: string } | null | undefined): string {
+  if (!task) return ''
+  const id = String(task.id || '').trim()
+  const label = String(task.label || '').trim()
+  const prompt = String(task.prompt || '').trim()
+  return JSON.stringify([id, label, prompt])
+}
+
+// 两个任务列表是否按顺序完全同任务（id/label/prompt 签名一致）。
+export function sameTaskList(
+  a: Array<{ id?: string; label?: string; prompt?: string } | null | undefined> | null | undefined,
+  b: Array<{ id?: string; label?: string; prompt?: string } | null | undefined> | null | undefined,
+): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    if (taskSignature(a[i]) !== taskSignature(b[i])) return false
+  }
+  return true
+}
+
 // 入口防御性清洗：过滤非对象 / 缺 prompt（或全空白）的任务条目，字符串字段规整。
 // 不依赖调用方 schema 校验——模型输出与历史配方都可能带畸形条目，缺 prompt 的
 // 任务无法执行，宁可在入口丢弃也不要在中途炸掉整个编排。

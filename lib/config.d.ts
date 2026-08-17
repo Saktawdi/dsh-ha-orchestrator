@@ -79,6 +79,8 @@ export interface OrchConfig {
     renderTotalLimit: number;
     /** 子智能体委托深度平台级硬上限（0 = 关闭；1 = 子智能体不能再委托）。 */
     maxDepth: number;
+    /** 重试相同任务时自动复用最近一次部分完成的 run（同会话、同任务、30 分钟内）。 */
+    autoResume: boolean;
 }
 /** 调试配置节。 */
 export interface DebugConfig {

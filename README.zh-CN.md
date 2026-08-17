@@ -1,7 +1,5 @@
 ![HA Orchestrator —— 模型故障恢复与多智能体编排](docs/hero-banner.png)
 
-# HA Orchestrator
-
 <p align="center">
   <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.0-4d6bfe?style=flat-square" alt="版本" height="20"></a>
   <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="平台" height="20"></a>
@@ -11,6 +9,7 @@
   <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin" height="20"></a>
 </p>
 
+# HA Orchestrator
 HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh）的插件：
 
 - 模型调用中途出错时，自动改用备用模型重试，任务继续跑下去。

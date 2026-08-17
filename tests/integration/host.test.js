@@ -1041,6 +1041,64 @@ test('回归：orchRuns() RPC 合并磁盘历史（重启后新实例仍可见�
   assert.ok(runs.every((r) => r.mode && r.startedAt !== undefined), '记录字段齐备')
 })
 
+test('Phase2 自动续跑：重试相同任务时复用部分完成的 run，只跑未完成子任务', async () => {
+  const { ctx, state } = makeEnv()
+  await mountPlugin(ctx)
+
+  // 第一次：t1/t3 成功，t2 失败（提供方返回 stopReason=error）
+  state.subagentResultFailures.set('t2', 1)
+  const res1 = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'P1' }, { id: 't2', prompt: 'P2' }, { id: 't3', prompt: 'P3' }],
+  }, { id: 'a1' })
+  assert.equal(res1.runs.length, 3)
+  assert.equal(res1.runs[0].status, 'completed')
+  assert.equal(res1.runs[1].status, 'error')
+  assert.equal(res1.runs[2].status, 'completed')
+  const firstCalls = ctx.subagentCalls.length
+
+  // 第二次：不传 resume。自动续跑应只启动未完成的 t2，t1/t3 复用旧结果。
+  const res2 = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'P1' }, { id: 't2', prompt: 'P2' }, { id: 't3', prompt: 'P3' }],
+  }, { id: 'a1' })
+  assert.equal(ctx.subagentCalls.length - firstCalls, 1, '只新增 1 次子智能体调用')
+  assert.equal(ctx.subagentCalls[firstCalls].request.label, 't2')
+  assert.deepEqual(res2.runs.map((r) => r.id), ['t1', 't2', 't3'])
+  assert.deepEqual(res2.runs.map((r) => r.status), ['completed', 'completed', 'completed'])
+
+  // 第二次 run 记录应带 resumedFrom 指向第一次 runId
+  const rpc = ctx.get('haOrchestrator')
+  const { runs } = await rpc.orchRuns()
+  assert.equal(runs[0].runId, res2.runId)
+  assert.equal(runs[0].resumedFrom, res1.runId)
+})
+
+test('Phase2 部分完成失败：错误信息包含 runId 与 resume 提示（模型重试可显式复用）', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  // budgetAgents=2 但 3 个任务：前两个完成后第三个触发预算中止，属于部分完成失败。
+  await assert.rejects(
+    toolExec(ctx, 'orchestrate', {
+      mode: 'fanout',
+      budgetAgents: 2,
+      tasks: [{ id: 'b1', prompt: 'P1' }, { id: 'b2', prompt: 'P2' }, { id: 'b3', prompt: 'P3' }],
+    }, { id: 'a1' }),
+    /resume: "r-/,
+  )
+
+  // 失败留痕里应保留已完成的 b1/b2 与完整任务定义，便于下一次自动续跑/显式 resume。
+  const rpc = ctx.get('haOrchestrator')
+  const { runs } = await rpc.orchRuns()
+  assert.equal(runs.length, 1)
+  const rec = runs[0]
+  assert.equal(rec.tasks.length, 3)
+  const completed = rec.runs.filter((r) => r.status === 'completed')
+  assert.equal(completed.length, 2)
+  assert.deepEqual(completed.map((r) => r.id).sort(), ['b1', 'b2'])
+})
+
 test('Phase2 实时进度事件：run-start / task-status / run-end', async () => {
   const { ctx } = makeEnv()
   await mountPlugin(ctx)
