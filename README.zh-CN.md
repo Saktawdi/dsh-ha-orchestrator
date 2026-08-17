@@ -1,11 +1,11 @@
-![HA Orchestrator —— 模型故障恢复与多智能体编排](docs/hero-banner.png)
+![HA Orchestrator —— 模型故障恢复与多智能体编排](https://raw.githubusercontent.com/Saktawdi/dsh-ha-orchestrator/v0.12.0/docs/hero-banner.png)
 
 <p align="center">
   <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.0-4d6bfe?style=flat-square" alt="版本" height="20"></a>
   <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="平台" height="20"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="许可证 MIT" height="20"></a>
-  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-204%20passing-2ea44f?style=flat-square" alt="测试" height="20"></a>
-  <a href="docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="编排模式" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="许可证 MIT" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/verification.md"><img src="https://img.shields.io/badge/tests-204%20passing-2ea44f?style=flat-square" alt="测试" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="编排模式" height="20"></a>
   <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin" height="20"></a>
 </p>
 
@@ -17,7 +17,7 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 配置页里还能定义自己的子智能体（也可以一句话让 AI 生成）；界面和提示词文案支持中英文，跟随 DSH 语言。
 
-[English](README.md)
+[English](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/README.md)
 
 > **扛住模型故障，并行推进复杂工作，把结果交付得更可靠。**
 >
@@ -135,11 +135,11 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 ## 展示
 
 <p align="center">
-  <img src="docs/settings-gallery.png" alt="HA Orchestrator 设置展示：模型高可用、子智能体编排、自定义子智能体与编辑页" width="1000">
+  <img src="https://raw.githubusercontent.com/Saktawdi/dsh-ha-orchestrator/v0.12.0/docs/settings-gallery.png" alt="HA Orchestrator 设置展示：模型高可用、子智能体编排、自定义子智能体与编辑页" width="1000">
 </p>
 
 <p align="center">
-  <img src="docs/run-states-gallery.png" alt="HA Orchestrator 已完成运行与预算耗尽异常状态" width="1000">
+  <img src="https://raw.githubusercontent.com/Saktawdi/dsh-ha-orchestrator/v0.12.0/docs/run-states-gallery.png" alt="HA Orchestrator 已完成运行与预算耗尽异常状态" width="1000">
 </p>
 
 > 注：上述展示来源版本：v0.12.x
@@ -185,11 +185,11 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 ## 文档
 
-- [架构](docs/architecture.md) —— 模块职责、数据流、服务契约
-- [配置参考](docs/configuration.md) —— 全部配置项与默认值/钳制规则
-- [安全说明](docs/security.md) —— 信任边界与已落地防护
-- [验证与发布](docs/verification.md) —— 测试矩阵、门禁、发布步骤
-- [兼容矩阵](docs/compatibility.md) —— 已验证 DSH 快照与 peer 策略
+- [架构](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/architecture.md) —— 模块职责、数据流、服务契约
+- [配置参考](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/configuration.md) —— 全部配置项与默认值/钳制规则
+- [安全说明](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/security.md) —— 信任边界与已落地防护
+- [验证与发布](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/verification.md) —— 测试矩阵、门禁、发布步骤
+- [兼容矩阵](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/compatibility.md) —— 已验证 DSH 快照与 peer 策略
 
 ## 注意事项
 

@@ -1,11 +1,11 @@
-![HA Orchestrator — model recovery and multi-agent orchestration](docs/hero-banner.png)
+![HA Orchestrator — model recovery and multi-agent orchestration](https://raw.githubusercontent.com/Saktawdi/dsh-ha-orchestrator/v0.12.0/docs/hero-banner.png)
 
 <p align="center">
   <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.0-4d6bfe?style=flat-square" alt="Version" height="20"></a>
   <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="Platform" height="20"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License: MIT" height="20"></a>
-  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-204%20passing-2ea44f?style=flat-square" alt="Tests" height="20"></a>
-  <a href="docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="Orchestration modes" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License: MIT" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/verification.md"><img src="https://img.shields.io/badge/tests-204%20passing-2ea44f?style=flat-square" alt="Tests" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="Orchestration modes" height="20"></a>
   <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin" height="20"></a>
 </p>
 
@@ -18,7 +18,7 @@ HA Orchestrator is a plugin for [DeepSeek Harness](https://github.com/deepseek-a
 
 The settings page also lets you define custom subagents (or generate one with AI), and the UI and prompt copy are available in Chinese and English, following your DSH language.
 
-[简体中文](README.zh-CN.md)
+[简体中文](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/README.zh-CN.md)
 
 > **Reliable model recovery. Parallel work. Review-ready delivery.**
 >
@@ -138,11 +138,11 @@ Model:  calls orchestrate (supervisor) → parallel analysis → review and merg
 Configure model recovery, watch parallel work progress, inspect the actual model used by each subagent, and audit the run after it ends.
 
 <p align="center">
-  <img src="docs/settings-gallery.png" alt="HA Orchestrator settings gallery with model recovery, orchestration, custom subagents, and subagent editor" width="1000">
+  <img src="https://raw.githubusercontent.com/Saktawdi/dsh-ha-orchestrator/v0.12.0/docs/settings-gallery.png" alt="HA Orchestrator settings gallery with model recovery, orchestration, custom subagents, and subagent editor" width="1000">
 </p>
 
 <p align="center">
-  <img src="docs/run-states-gallery.png" alt="HA Orchestrator completed run and budget failure states" width="1000">
+  <img src="https://raw.githubusercontent.com/Saktawdi/dsh-ha-orchestrator/v0.12.0/docs/run-states-gallery.png" alt="HA Orchestrator completed run and budget failure states" width="1000">
 </p>
 
 > Note: These screenshots are from v0.12.x.
@@ -188,11 +188,11 @@ During a conversation you also get two live views:
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — modules, data flows, service contract
-- [Configuration](docs/configuration.md) — every config key with defaults and clamping rules
-- [Security](docs/security.md) — trust boundary and applied hardening
-- [Verification & release](docs/verification.md) — test matrix, gates, release steps
-- [Compatibility](docs/compatibility.md) — verified DSH snapshots and peer strategy
+- [Architecture](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/architecture.md) — modules, data flows, service contract
+- [Configuration](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/configuration.md) — every config key with defaults and clamping rules
+- [Security](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/security.md) — trust boundary and applied hardening
+- [Verification & release](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/verification.md) — test matrix, gates, release steps
+- [Compatibility](https://github.com/Saktawdi/dsh-ha-orchestrator/blob/v0.12.0/docs/compatibility.md) — verified DSH snapshots and peer strategy
 
 ## Notes
 
