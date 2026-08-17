@@ -9,7 +9,7 @@ assignees:
 ## 环境
 
 - **DSH 版本**：（如 rc.6 / commit hash）
-- **ha-orchestrator 版本**：（如 v0.7.0，或安装方式）
+- **ha-orchestrator 版本**：（如 v0.12.0，或安装方式）
 - **Node 版本**：（`node -v`）
 - **平台 / 操作系统**：（如 Windows 11 / macOS / Ubuntu 24.04）
 

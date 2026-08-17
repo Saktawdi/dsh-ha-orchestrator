@@ -52,10 +52,12 @@ import {
   pipelineStageBlock,
   findUnknownAgents,
   normalizeFinalRuns,
+  cleanTasks,
   normalizeRunResult,
   poolRun,
   renderRunOutput,
   resolveAgentDef as orchResolveAgentDef,
+  resolveSubagentFallbacks,
   resolveConcurrency,
   resolveMode,
   summarizeRuns,
@@ -71,6 +73,8 @@ import type {
   LlmService,
   SubagentProvider,
   SubagentRun,
+  SubagentCapabilitiesLike,
+  ToolsServiceLike,
   SystemPromptService,
   PromptAssembleContextLike,
   SettingsService,
@@ -165,6 +169,28 @@ interface RunRecord {
   summary: string
 }
 
+/** 运行中的编排任务视图（供 UI 实时轮询）。 */
+interface ActiveTaskView {
+  id: string
+  label: string
+  agent: string
+  status: string
+  lastKey: string
+  /** 子智能体会话 id；用于实时回读 HA lastKey。 */
+  agentId?: string
+}
+
+/** 运行中的编排 run 视图（供 UI 实时轮询）。 */
+interface ActiveRunView {
+  runId: string
+  callId: string
+  /** 父会话 id；悬浮面板切换会话时据此过滤。 */
+  sessionId: string
+  mode: OrchestrateMode
+  startedAt: string
+  tasks: ActiveTaskView[]
+}
+
 async function apply(ctx: Context): Promise<void> {
   // ================= 配置与状态 =================
   const state: {
@@ -176,12 +202,14 @@ async function apply(ctx: Context): Promise<void> {
     debugLogs: DebugLogEntry[]
     probeLog: Array<{ at: string; key: string; ok: boolean; reason?: string }>
     runs: RunRecord[]
+    activeRuns: ActiveRunView[]
   } = {
     config: JSON.parse(JSON.stringify(defaultConfig)) as Config,
     ...createHaState(),
     debugLogs: [],
     probeLog: [],
     runs: [],
+    activeRuns: [],
   }
   let providerCache: Set<string> | null = null
   let providerCacheAt = 0
@@ -200,6 +228,8 @@ async function apply(ctx: Context): Promise<void> {
   // 探测失败后的重试间隔：不短于冷却、封顶 5 分钟，避免无限增长
   const PROBE_RETRY_MIN_MS = 60 * 1000
   const PROBE_RETRY_MAX_MS = 5 * 60 * 1000
+  // 单次探测超时：流挂起时中止，避免 runProbe 永久 pending（该 key 的恢复探测随之丢失）
+  const PROBE_TIMEOUT_MS = 30 * 1000
   // run 持久化：JSONL 追加写，内存保留最近 RUN_MEM_CAP 条，磁盘保留 RUN_FILE_CAP 条
   const RUNS_FILE = 'dsh-ha-orchestrator.runs.jsonl'
   const LEGACY_RUNS_FILE = 'ha-orchestrator.runs.jsonl'
@@ -211,6 +241,8 @@ async function apply(ctx: Context): Promise<void> {
   let runPersistTail: Promise<void> = Promise.resolve()
   // 已排程的探测定时器（key -> handle），防止同一隔离键重复调度
   const pendingProbes = new Map<string, unknown>()
+  // 插件停止标记：dispose 后不再排程探测/等待全局并发槽，避免残留活动写已停上下文
+  let pluginDisposed = false
 
   // ================= 语言系统 =================
   // 语言包位于插件包根目录 `.language/`（zh.json / en.json），键集以 zh.json 为基准。
@@ -476,7 +508,16 @@ async function apply(ctx: Context): Promise<void> {
         if (!line.trim()) continue
         try {
           const rec = JSON.parse(line) as RunRecord
-          if (rec && rec.runId) out.push(rec)
+          // 半损坏记录防御：下游（/orchestrate 命令、resume）直接 .length/.filter/.slice，
+          // runs/tasks 缺失或非数组、startedAt/mode 缺失时补默认，避免整条命令/恢复路径被单行拖垮
+          if (rec && rec.runId) {
+            if (!Array.isArray(rec.runs)) rec.runs = []
+            if (!Array.isArray(rec.tasks)) rec.tasks = []
+            if (typeof rec.runId !== 'string') rec.runId = String(rec.runId)
+            if (typeof rec.startedAt !== 'string') rec.startedAt = ''
+            if (typeof rec.mode !== 'string') rec.mode = 'fanout'
+            out.push(rec)
+          }
         } catch (e) { /* 跳过损坏行 */ }
       }
       return out.sort((a, b) => {
@@ -490,6 +531,21 @@ async function apply(ctx: Context): Promise<void> {
       return []
     }
   }
+  // 合并内存与磁盘 run 记录：内存优先（最新、最全），磁盘补历史；按 startedAt 倒序。
+  // `/orchestrate runs|show` 命令与 orchRuns() RPC 共用，保证两侧行为一致（重启后 RPC 仍可见历史）。
+  async function mergedRunRecords(): Promise<RunRecord[]> {
+    const diskRuns = await readRunsFromDisk()
+    const byId = new Map<string, RunRecord>()
+    for (const r of state.runs) byId.set(r.runId, r)
+    for (const r of diskRuns) if (!byId.has(r.runId)) byId.set(r.runId, r)
+    return [...byId.values()].sort((a, b) => {
+      const at = String(a.startedAt || '')
+      const bt = String(b.startedAt || '')
+      if (at < bt) return 1
+      if (at > bt) return -1
+      return 0
+    })
+  }
   // 落盘一条 run 记录：串行执行，避免并发读-改-写互相覆盖；
   // 文件内统一保持“最新在前”，新记录插入头部。
   function persistRun(rec: RunRecord): void {
@@ -502,11 +558,67 @@ async function apply(ctx: Context): Promise<void> {
       console.error('[ha] persist run failed', e)
     })
   }
-  // 记录 run 到内存 + 落盘（run 结束时调用）
+  // 记录 run 到内存 + 落盘（run 结束时调用；同时产出人可读的 markdown 工件，含完整子任务报告）
   function recordRun(rec: RunRecord): void {
     state.runs.unshift(rec)
     if (state.runs.length > RUN_MEM_CAP) state.runs.splice(RUN_MEM_CAP)
     persistRun(rec)
+    persistRunArtifact(rec)
+  }
+  // 调研工件落盘：每个 run 一份 markdown（子任务完整输出不截断），与 runs.jsonl 同目录。
+  // 文件名 dsh-ha-orchestrator.run-<runId>.md；fs 服务无法枚举目录，暂不做数量修剪（见 docs/local 待办）。
+  function persistRunArtifact(rec: RunRecord): void {
+    runPersistTail = runPersistTail.then(async () => {
+      const lines: string[] = []
+      lines.push('# orchestrate run ' + rec.runId)
+      lines.push('')
+      lines.push('- mode: ' + rec.mode + ' | agent: ' + (rec.agent || '-') + ' | provider: ' + (rec.provider || '-'))
+      lines.push('- concurrency: ' + rec.concurrency + ' | durationMs: ' + (rec.durationMs !== undefined ? rec.durationMs : '-') + ' | aborted: ' + !!rec.aborted)
+      lines.push('- startedAt: ' + rec.startedAt + (rec.finishedAt ? ' | finishedAt: ' + rec.finishedAt : ''))
+      for (const r of rec.runs || []) {
+        lines.push('')
+        lines.push('## ' + (r.label || r.id) + (r.agent ? ' [via ' + r.agent + ']' : '') + ' [' + r.status + ']' + (r.lastKey ? ' {' + r.lastKey + '}' : ''))
+        lines.push('')
+        lines.push(String(r.output || ''))
+      }
+      lines.push('')
+      lines.push('## summary')
+      lines.push('')
+      lines.push(String(rec.summary || ''))
+      lines.push('')
+      const ok = await writeStorageText('dsh-ha-orchestrator.run-' + rec.runId + '.md', lines.join('\n'))
+      if (!ok) debugLog('warn', 'orch.artifact', 'run 工件 markdown 落盘失败', { runId: rec.runId })
+    }).catch((e) => {
+      console.error('[ha] persist run artifact failed', e)
+    })
+  }
+  // ---- 运行中编排的实时视图（供 UI 轮询） ----
+  function upsertActiveTask(runId: string, taskId: string, patch: Partial<ActiveTaskView>): void {
+    const run = state.activeRuns.find((r) => r.runId === runId)
+    if (!run || !taskId) return
+    let task = run.tasks.find((t) => t.id === taskId)
+    if (!task) {
+      task = { id: taskId, label: patch.label || '', agent: patch.agent || '', status: 'pending', lastKey: '', agentId: patch.agentId || '' }
+      run.tasks.push(task)
+    }
+    if (patch.label !== undefined) task.label = patch.label
+    if (patch.agent !== undefined) task.agent = patch.agent
+    if (patch.status !== undefined) task.status = patch.status
+    if (patch.lastKey !== undefined) task.lastKey = patch.lastKey
+    if (patch.agentId !== undefined) task.agentId = patch.agentId
+  }
+  function removeActiveRun(runId: string): void {
+    const i = state.activeRuns.findIndex((r) => r.runId === runId)
+    if (i >= 0) state.activeRuns.splice(i, 1)
+  }
+  function activeRunsSnapshot(): ActiveRunView[] {
+    return state.activeRuns.map((run) => ({
+      ...run,
+      tasks: run.tasks.map((t) => {
+        const live = t.agentId ? (entryFor(t.agentId).lastKey || '') : ''
+        return { ...t, lastKey: live || t.lastKey || '' }
+      }),
+    }))
   }
   // ---- 全局并发预算（跨 run 共享信号量） ----
   // orch.globalConcurrency > 0 时，所有 orchestrate 执行共享并发上限，
@@ -542,7 +654,7 @@ async function apply(ctx: Context): Promise<void> {
   // provider 通配键不直接探测：到期即解除（circuit-closed, reason=expired）。
   function scheduleProbe(key: string, delayMs: number): void {
     // 同一 key 已有排程时不再重复调度，避免多个 timer 重复探测
-    if (pendingProbes.has(key)) return
+    if (pluginDisposed || pendingProbes.has(key)) return
     const doProbe = (): void => {
       pendingProbes.delete(key)
       void runProbe(key)
@@ -585,7 +697,27 @@ async function apply(ctx: Context): Promise<void> {
   async function probeOnce(provider: string, model: string): Promise<{ ok: boolean; reason?: string }> {
     const llm = getService<LlmService>(ctx, 'llm')
     if (!llm || typeof llm.stream !== 'function') return { ok: false, reason: 'no-llm-service' }
-    const signal = new AbortController().signal
+    const controller = new AbortController()
+    const signal = controller.signal
+    // 探测超时兜底：流挂起时 abort 中止（done 置位后回调空转，不影响已完成探测）
+    let timedOut = false
+    let done = false
+    let cancelTimeout: (() => void) | null = null
+    const armTimeout = (): void => {
+      const fire = (): void => {
+        if (done || signal.aborted) return
+        timedOut = true
+        controller.abort()
+      }
+      const timer = getService<TimerService>(ctx, 'timer')
+      if (timer && typeof timer.timeout === 'function') {
+        try { timer.timeout(fire, PROBE_TIMEOUT_MS) } catch (e) { /* 无超时兜底 */ }
+      } else if (typeof setTimeout === 'function' && typeof clearTimeout === 'function') {
+        const h = setTimeout(fire, PROBE_TIMEOUT_MS)
+        cancelTimeout = () => clearTimeout(h)
+      }
+    }
+    if (!pluginDisposed) armTimeout()
     const request = {
       provider,
       model,
@@ -604,7 +736,12 @@ async function apply(ctx: Context): Promise<void> {
       for await (const _chunk of iterate) break
       return { ok: true }
     } catch (e) {
-      return { ok: false, reason: String((e && (e as Error).message) || e) }
+      return { ok: false, reason: timedOut ? 'probe-timeout' : String((e && (e as Error).message) || e) }
+    } finally {
+      done = true
+      // 赋值发生在 armTimeout 闭包内，TS 窄化会误判为 never；显式还原类型后调用
+      const cancel = cancelTimeout as (() => void) | null
+      if (cancel) { try { cancel() } catch (e) { /* ignore */ } }
     }
   }
   function recordProbe(key: string, ok: boolean, reason?: string): void {
@@ -612,6 +749,7 @@ async function apply(ctx: Context): Promise<void> {
     if (state.probeLog.length > PROBE_LOG_CAP) state.probeLog.splice(PROBE_LOG_CAP)
   }
   async function runProbe(key: string, force = false): Promise<{ ok: boolean; reason?: string; key: string }> {
+    if (pluginDisposed) return { ok: false, reason: 'disposed', key }
     const entry = state.quarantine.get(key)
     const cfg = state.config.ha
     if (!cfg.enabled || !cfg.probeEnabled) return { ok: false, reason: 'probe-disabled', key }
@@ -938,6 +1076,9 @@ async function apply(ctx: Context): Promise<void> {
     try {
       const cfg: HaConfig = state.config.ha
       if (!cfg.enabled || !cfg.backups || cfg.backups.length === 0) return next()
+      // 编排子智能体由 runOne 的角色级回退链负责；不要把主会话的 HA
+      // backups/熔断状态泄漏到子智能体，保证两套配置真正独立。
+      if (isSubagentAgent(payload.agent)) return next()
       const config = await next()
       if (!config || !config.provider || !config.model) return config
       const k = keyOf(config.provider, config.model)
@@ -997,7 +1138,8 @@ async function apply(ctx: Context): Promise<void> {
       const cfg: HaConfig = state.config.ha
       if (!cfg.enabled || !cfg.backups || cfg.backups.length === 0) return next()
       const { agent, provider, failure, signal } = payload
-      if (signal.aborted) return next()
+      if (isSubagentAgent(agent)) return next()
+      if (signal && signal.aborted) return next()
       const code = failure && failure.code ? String(failure.code) : 'UNKNOWN'
       if (!matchesCodes(cfg.codes, code)) return next()
       const entry = entryFor(agent.id)
@@ -1080,13 +1222,16 @@ async function apply(ctx: Context): Promise<void> {
       const cfg: HaConfig = state.config.ha
       if (!cfg.enabled || !cfg.steerOnStop) return
       const { agent, turn, error } = payload
+      if (isSubagentAgent(agent)) return
       // CONTEXT_WINDOW_EXCEEDED 不在此列：上下文超长不是模型可用性问题，
       // 不应隔离原模型并 steer 切到备用（否则备用会收到同一份超长全文）。
       const MODEL_CODES = ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'QUOTA', 'EMPTY_RESPONSE', 'NO_ADAPTER', 'INVALID_CREDENTIAL']
       const code = error && (error as { failure?: { code?: string } }).failure
         ? String((error as { failure: { code?: string } }).failure.code || 'UNKNOWN')
         : (error && typeof (error as { code?: unknown }).code === 'string' ? String((error as { code: string }).code) : '')
-      if (!code || MODEL_CODES.indexOf(code) < 0) return
+      // 双重过滤：既要在本处理器认识的模型可用性错误码集合内，也要通过用户
+      // 的 cfg.codes 过滤器（用户收窄过滤时，不在名单的错误码不应触发隔离/steer）。
+      if (!code || MODEL_CODES.indexOf(code) < 0 || !matchesCodes(cfg.codes, code)) return
       const entry = entryFor(agent.id)
       const failingKey = entry.lastKey || ''
       // 关键：先隔离失败模型，保证下一次请求（无论手动还是自动唤醒）直接用备用模型
@@ -1132,13 +1277,106 @@ async function apply(ctx: Context): Promise<void> {
     if (!provider) throw new Error(t('orch.errNoProvider'))
     return provider
   }
+  // 读取 provider 能力声明（宿主 runtime 提供 getProvider 时）；读取失败返回 null（视为未知，不阻断）。
+  function readProviderCapabilities(subagents: SubagentProvider, provider: string): SubagentCapabilitiesLike | null {
+    try {
+      if (typeof subagents.getProvider !== 'function') return null
+      const p = subagents.getProvider(provider)
+      return (p && p.capabilities) || null
+    } catch {
+      return null
+    }
+  }
   // 自定义子智能体：按名称查找启用项
   function resolveAgentDef(name: string | null | undefined): AgentDefLike | null {
     return orchResolveAgentDef(state.config.orch.agents, name)
   }
   // 子智能体清单不再内嵌到工具描述/系统提示词：模型按需调用内置 list-subagents
   // 工具获取（名称/provider/模型/描述），避免每轮注入占用上下文。
+  /**
+   * 执行一个子任务，并按 AgentEntry.fallbacks 顺序尝试备用模型。
+   *
+   * 回退链对自定义角色是独立配置，不读取/推进主模型 HA 的全局 backups；
+   * 未指定角色的兼容路径才沿用主 HA backups。实际 start / result / dispose
+   * 生命周期仍全部复用同一个 runOneAttempt。
+   * 这样 fanout、pipeline、reviewer、merge 等所有编排分支天然共享回退语义。
+   */
   async function runOne(
+    subagents: SubagentProvider,
+    provider: string,
+    task: TaskLike,
+    extra: string | null,
+    parent: unknown,
+    signal: AbortSignal,
+    agentDef: AgentDefLike | null,
+    runId = '',
+    onFallbackAttempt?: () => void,
+  ): Promise<RunResultLike> {
+    // 有 fallbacks 字段时按角色独立配置；自定义角色未配置时保持关闭，
+    // 避免把主会话的 HA backups 混入角色。未指定自定义角色的普通任务
+    // 才沿用主 HA backups 作为兼容兜底。
+    const hasRoleFallbackConfig = !!agentDef && Object.prototype.hasOwnProperty.call(agentDef, 'fallbacks')
+    const fallbackSource = hasRoleFallbackConfig
+      ? (agentDef && agentDef.fallbacks) || []
+      : agentDef
+        ? []
+        : (state.config.ha.enabled ? state.config.ha.backups : [])
+    const fallbackBase: AgentDefLike = agentDef || { name: '', fallbacks: fallbackSource }
+    const fallbackTargets = resolveSubagentFallbacks({ ...fallbackBase, fallbacks: fallbackSource })
+    const attempts: Array<AgentDefLike | null> = [agentDef]
+    for (const target of fallbackTargets) {
+      // 仅替换模型路由，保留名称、persona、工具裁剪等角色配置。
+      const attempt: AgentDefLike = { ...fallbackBase, provider: target.provider, model: target.model }
+      // 回退条目的 effort 必须独立于主模型：未配置时清掉主模型可能带来的 effort，
+      // 避免把不适用于该模型的推理强度错误继承到回退调用。
+      delete attempt.reasoningEffort
+      if (target.reasoningEffort) attempt.reasoningEffort = target.reasoningEffort
+      attempts.push(attempt)
+    }
+    let lastError: unknown = null
+    let lastResult: RunResultLike | null = null
+    for (let i = 0; i < attempts.length; i += 1) {
+      if (signal.aborted) throw new Error(t('orch.errAborted'))
+      const attemptDef = attempts[i]
+      const nextDef = attempts[i + 1]
+      // runWithBudget 已计入主模型候选；后续角色回退候选也必须各计一次，
+      // 防止通过回退链绕过 budgetAgents 的硬上限。
+      if (i > 0 && onFallbackAttempt) onFallbackAttempt()
+      try {
+        const result = await runOneAttempt(subagents, provider, task, extra, parent, signal, attemptDef, runId)
+        lastResult = result
+        // 子智能体 provider 对模型/传输失败通常以 stopReason=error 返回，
+        // 而不是 reject；只有配置了后续候选时才继续回退。
+        if (result.status !== 'error' || i >= attempts.length - 1) return result
+        debugLog('warn', 'orch.task.fallback', '子智能体结果失败，尝试角色回退模型', {
+          label: String(task.label || task.id || 'task'),
+          agent: attemptDef ? String(attemptDef.name || '') : '',
+          from: attemptDef && attemptDef.provider && attemptDef.model ? String(attemptDef.provider) + '/' + String(attemptDef.model) : '',
+          to: nextDef && nextDef.provider && nextDef.model
+            ? String(nextDef.provider) + '/' + String(nextDef.model)
+            : '',
+          reason: result.output.slice(0, 300),
+        })
+      } catch (e) {
+        lastError = e
+        if (signal.aborted || i >= attempts.length - 1) throw e
+        debugLog('warn', 'orch.task.fallback', '子智能体调用失败，尝试角色回退模型', {
+          label: String(task.label || task.id || 'task'),
+          agent: attemptDef ? String(attemptDef.name || '') : '',
+          from: attemptDef && attemptDef.provider && attemptDef.model ? String(attemptDef.provider) + '/' + String(attemptDef.model) : '',
+          to: nextDef && nextDef.provider && nextDef.model
+            ? String(nextDef.provider) + '/' + String(nextDef.model)
+            : '',
+          message: String((e && (e as Error).message) || e),
+        })
+      }
+    }
+    if (lastResult) return lastResult
+    throw lastError || new Error('runOne: 子智能体回退链为空')
+  }
+
+  /** 单个模型候选的一次完整生命周期；由 runOne 的所有候选复用。 */
+  async function runOneAttempt(
     subagents: SubagentProvider,
     provider: string,
     task: TaskLike,
@@ -1150,28 +1388,98 @@ async function apply(ctx: Context): Promise<void> {
   ): Promise<RunResultLike> {
     if (!signal) throw new Error('runOne: 缺少取消信号（signal），子智能体提供方需要真实 AbortSignal')
     const runLabel = String(task.label || task.id || 'task')
+    const taskId = String(task.id || task.label || 'task')
     const agentName = agentDef ? String(agentDef.name) : ''
+    const at = () => new Date().toISOString()
     debugLog('debug', 'orch.task.start', '子智能体任务开始', { label: runLabel, agent: agentName, provider })
-    if (runId) emitOrchEvent('orch/task-status', { runId, taskId: String(task.id || ''), label: runLabel, status: 'running', at: new Date().toISOString() })
+    if (runId) {
+      upsertActiveTask(runId, taskId, { label: runLabel, agent: agentName, status: 'running', lastKey: '' })
+      emitOrchEvent('orch/task-status', { runId, taskId, label: runLabel, status: 'running', at: at() })
+    }
     const request = buildSubagentRequest(task, extra, agentDef, t('orch.mergedPrefix'), parent, signal)
-    const run: SubagentRun = await subagents.start(provider, request)
+    // 平台能力门控：toolFilter/outputSchema/maxDepth 任一存在且 provider 声明不支持时必须剥离，
+    // 否则服务层 start 前校验会拒绝整个子任务。maxDepth 为编排级配置（orch.maxDepth > 0 时下发）。
+    const cfgMaxDepth = Math.max(0, Number(state.config.orch.maxDepth) || 0)
+    if (cfgMaxDepth > 0) request.maxDepth = cfgMaxDepth
+    if (request.toolFilter || request.outputSchema || request.maxDepth !== undefined) {
+      const caps = readProviderCapabilities(subagents, provider)
+      if (caps) {
+        if (request.toolFilter && caps.toolFilter === false) {
+          delete request.toolFilter
+          debugLog('warn', 'orch.task.gate', 'provider 不支持 toolFilter，已剥离工具裁剪后继续启动', { label: runLabel, agent: agentName, provider })
+        }
+        if (request.outputSchema && caps.outputSchema === false) {
+          delete request.outputSchema
+          debugLog('warn', 'orch.task.gate', 'provider 不支持 outputSchema，已剥离结构化输出后继续启动', { label: runLabel, agent: agentName, provider })
+        }
+        if (request.maxDepth !== undefined && caps.depthLimit === false) {
+          delete request.maxDepth
+          debugLog('warn', 'orch.task.gate', 'provider 不支持 maxDepth，已剥离深度上限后继续启动', { label: runLabel, agent: agentName, provider })
+        }
+      }
+    }
+    let run: SubagentRun
+    try {
+      run = await subagents.start(provider, request)
+    } catch (e) {
+      debugLog('error', 'orch.task.error', '子智能体启动失败', { label: runLabel, agent: agentName, message: String((e && (e as Error).message) || e) })
+      if (runId) {
+        upsertActiveTask(runId, taskId, { status: 'error', lastKey: '' })
+        emitOrchEvent('orch/task-status', { runId, taskId, label: runLabel, status: 'error', at: at() })
+      }
+      throw e
+    }
+    // 子智能体发布后即可拿到其会话 id，进而读取 HA 为该子代理记录的最新 lastKey。
+    const subId = String((run && (run as { id?: unknown }).id) || ((run && (run as { localAgent?: { id?: unknown } }).localAgent && (run as { localAgent: { id?: unknown } }).localAgent.id) || ''))
+    const configuredKey = agentDef && agentDef.provider && agentDef.model
+      ? String(agentDef.provider) + '/' + String(agentDef.model)
+      : ''
+    const lastKey = subId ? (entryFor(subId).lastKey || configuredKey) : configuredKey
+    if (runId) {
+      upsertActiveTask(runId, taskId, { status: 'running', lastKey, agentId: subId })
+      emitOrchEvent('orch/task-status', { runId, taskId, label: runLabel, status: 'running', lastKey, agentId: subId, at: at() })
+    }
     try {
       const res = await run.result
       const status = String(res.stopReason || 'completed')
       const text = (res.output || []).filter((b): b is { type: string; text: string } => !!(b && b.type === 'text')).map((b) => b.text).join('\n')
-      debugLog('debug', 'orch.task.end', '子智能体任务结束', { label: runLabel, agent: agentName, status, outputChars: text.length })
-      if (runId) emitOrchEvent('orch/task-status', { runId, taskId: String(task.id || ''), label: runLabel, status, at: new Date().toISOString() })
-      return normalizeRunResult(task, agentDef, res)
+      const finalLastKey = subId ? (entryFor(subId).lastKey || lastKey || '') : lastKey
+      debugLog('debug', 'orch.task.end', '子智能体任务结束', { label: runLabel, agent: agentName, status, outputChars: text.length, lastKey: finalLastKey })
+      if (runId) {
+        upsertActiveTask(runId, taskId, { status, lastKey: finalLastKey })
+        emitOrchEvent('orch/task-status', { runId, taskId, label: runLabel, status, lastKey: finalLastKey, agentId: subId, at: at() })
+      }
+      const resultRun = normalizeRunResult(task, agentDef, res)
+      if (finalLastKey) resultRun.lastKey = finalLastKey
+      if (subId) resultRun.agentId = subId
+      return resultRun
     } catch (e) {
-      debugLog('error', 'orch.task.error', '子智能体任务失败', { label: runLabel, agent: agentName, message: String((e && (e as Error).message) || e) })
-      if (runId) emitOrchEvent('orch/task-status', { runId, taskId: String(task.id || ''), label: runLabel, status: 'error', at: new Date().toISOString() })
+      const finalLastKey = subId ? (entryFor(subId).lastKey || lastKey || '') : lastKey
+      debugLog('error', 'orch.task.error', '子智能体任务失败', { label: runLabel, agent: agentName, message: String((e && (e as Error).message) || e), lastKey: finalLastKey })
+      if (runId) {
+        upsertActiveTask(runId, taskId, { status: 'error', lastKey: finalLastKey })
+        emitOrchEvent('orch/task-status', { runId, taskId, label: runLabel, status: 'error', lastKey: finalLastKey, agentId: subId, at: at() })
+      }
+      if (subId && e && typeof e === 'object') (e as { agentId?: string }).agentId = subId
       throw e
     } finally {
-      await run.dispose()
+      // dispose 抛错不能吞掉成功结果/替换原始异常：仅记录，不影响任务结局
+      try {
+        await run.dispose()
+      } catch (e) {
+        console.error('[ha] subagent dispose failed', e)
+        debugLog('warn', 'orch.task.dispose', '子智能体 dispose 失败', { label: runLabel, message: String((e && (e as Error).message) || e) })
+      }
     }
   }
-  // 汇总 runs 为纯文本（注入当前语言的 t，供 supervisor / fanout 使用）
-  function summarize(runs: RunResultLike[]): string { return summarizeRuns(runs, t) }
+  // 汇总 runs 为纯文本（注入当前语言的 t 与配置的截断上限，供 supervisor / fanout 使用；0 = 用代码默认值）
+  function summarize(runs: RunResultLike[]): string {
+    const oc = state.config.orch
+    return summarizeRuns(runs, t, {
+      bodyLimit: Number(oc.mergeBodyLimit) > 0 ? Number(oc.mergeBodyLimit) : undefined,
+      totalLimit: Number(oc.mergeTotalLimit) > 0 ? Number(oc.mergeTotalLimit) : undefined,
+    })
+  }
   function buildOrchestrateTool(): ReturnType<typeof defineTool> {
     const joinSep = langState.active === 'en' ? ' ' : ''
     const descParts = [
@@ -1208,6 +1516,8 @@ async function apply(ctx: Context): Promise<void> {
               label: { type: 'string' },
               agent: { type: 'string', description: '自定义子智能体名称（可选；可用列表调用 list-subagents 查询）' },
               prompt: { type: 'string', required: true },
+              outputHint: { type: 'string', description: '输出要求提示（可选；追加到该子任务 prompt 末尾，如“以 markdown 表格输出、附来源 URL”）' },
+              outputSchema: { type: 'json', description: '结构化输出 JSON Schema（可选；type=object 根，如 {"type":"object","properties":{"findings":{"type":"array"}}}；provider 支持时子智能体返回匹配 JSON，merge 可直接消费）' },
             },
           },
         },
@@ -1232,19 +1542,24 @@ async function apply(ctx: Context): Promise<void> {
                   agent: { type: 'string' },
                   status: { type: 'string', required: true },
                   output: { type: 'string', required: true },
+                  lastKey: { type: 'string' },
                 },
               },
             },
           },
         },
-        render(args: unknown, value: { summary?: string; runs?: Array<{ id?: string; label?: string; agent?: string; status?: string; output?: string }> } | null | undefined): ReturnType<typeof renderRunOutput> {
-          return renderRunOutput(value)
+        render(args: unknown, value: { summary?: string; runs?: Array<{ id?: string; label?: string; agent?: string; status?: string; output?: string; lastKey?: string }> } | null | undefined): ReturnType<typeof renderRunOutput> {
+          const oc = state.config.orch
+          return renderRunOutput(value, {
+            runOutputLimit: Number(oc.renderRunLimit) > 0 ? Number(oc.renderRunLimit) : undefined,
+            totalLimit: Number(oc.renderTotalLimit) > 0 ? Number(oc.renderTotalLimit) : undefined,
+          })
         },
         // 对话内 Run 卡片：结构化展示元数据（随会话日志持久化，replay 可还原）
         presentationMeta(args, value) {
           return {
             runId: String((value && value.runId) || ''),
-            runs: (value && value.runs ? value.runs : []).map((r) => ({ id: r.id, label: r.label, status: r.status })),
+            runs: (value && value.runs ? value.runs : []).map((r) => ({ id: r.id, label: r.label, agent: r.agent || '', status: r.status, lastKey: r.lastKey || '' })),
           }
         },
       },
@@ -1273,6 +1588,8 @@ async function apply(ctx: Context): Promise<void> {
           // ---- 全局并发预算 ----
           await acquireOrchSlot()
           slotHeld = true
+          // 等待全局槽期间调用可能已被取消：立即退出，不再启动子智能体
+          if (exec.signal.aborted) throw new Error(t('orch.errAborted'))
           // ---- 配方（preset）解析：从配方加载 mode/tasks/agent，调用参数可覆盖 ----
           let presetMode: OrchestrateMode | undefined
           let presetAgent: string | undefined
@@ -1289,7 +1606,9 @@ async function apply(ctx: Context): Promise<void> {
             presetTasks = Array.isArray(preset.tasks) ? preset.tasks.slice() : []
             debugLog('info', 'orch.preset', '使用配方执行', { name: String(args.preset), tasks: presetTasks.length })
           }
-          const rawTasks = Array.isArray(args.tasks) && args.tasks.length > 0 ? args.tasks.slice() : (presetTasks || [])
+          // 入口防御性清洗：过滤非对象/缺 prompt 的畸形任务（不依赖 schema），
+          // 清洗后为空会走到下方 errNoTasks / errRunDone 校验，给出明确错误。
+          const rawTasks = cleanTasks(Array.isArray(args.tasks) && args.tasks.length > 0 ? args.tasks : (presetTasks || []))
           const maxAgents = Math.max(1, Number(cfg.maxAgents) || 8)
           const tasks = truncateTasks(rawTasks, maxAgents)
           const provider = resolveProvider()
@@ -1314,13 +1633,14 @@ async function apply(ctx: Context): Promise<void> {
               agent: (stageDef && stageDef.name) || '',
               status: 'error',
               output: String((e && (e as Error).message) || e),
+              agentId: String((e && typeof e === 'object' && (e as { agentId?: unknown }).agentId) || ''),
             }
           }
           // ---- 子智能体调用预算（budgetAgents）：防失控硬限制 ----
-          // 每次 runOne 调用（含重试/评审/合成）计 1；预算耗尽立即抛错中止整个编排。
+          // 每个子智能体候选调用（含角色回退、评审/合成）计 1；预算耗尽立即抛错中止整个编排。
           const budgetAgents = Math.max(0, Math.min(128, Number(args.budgetAgents) || 0))
           let budgetUsed = 0
-          const runWithBudget = <T>(fn: () => Promise<T>): Promise<T> => {
+          const spendBudget = (): void => {
             if (budgetAgents > 0 && budgetUsed >= budgetAgents) {
               const err = new Error(t('orch.errBudget', { n: budgetAgents })) as Error & { isolate?: boolean }
               // 预算错误不参与任务级隔离：直接中止整个编排
@@ -1328,9 +1648,12 @@ async function apply(ctx: Context): Promise<void> {
               throw err
             }
             budgetUsed += 1
+          }
+          const runWithBudget = <T>(fn: () => Promise<T>): Promise<T> => {
+            spendBudget()
             return fn()
           }
-          const worker = (task: TaskLike, i: number): Promise<RunResultLike> => runWithBudget(() => runOne(subagents, provider, task, '', parent, signal, defFor(task), runId))
+          const worker = (task: TaskLike, i: number): Promise<RunResultLike> => runWithBudget(() => runOne(subagents, provider, task, '', parent, signal, defFor(task), runId, spendBudget))
           // ---- resume 恢复：复用已完成子任务，只跑未完成部分 ----
           let resumedFrom = ''
           let resumePrevRec: RunRecord | null = null
@@ -1361,7 +1684,21 @@ async function apply(ctx: Context): Promise<void> {
           }
           if (runTasks.length === 0) throw new Error(t('orch.errNoTasks'))
           debugLog('info', 'orch.start', 'orchestrate 调用', { agent: String(exec.agent.id || ''), mode, tasks: runTasks.length, concurrency, provider, defaultAgent: args.agent || '' })
-          emitOrchEvent('orch/run-start', { runId, mode, agent: String(exec.agent.id || ''), resumedFrom: resumedFrom || undefined, tasks: runTasks.map((tk) => ({ id: tk.id || '', label: tk.label || '' })), at: startedAt })
+          emitOrchEvent('orch/run-start', { runId, mode, agent: String(exec.agent.id || ''), ...(resumedFrom ? { resumedFrom } : {}), tasks: runTasks.map((tk) => ({ id: tk.id || '', label: tk.label || '' })), at: startedAt })
+          state.activeRuns.push({
+            runId,
+            callId: String((exec as { callId?: unknown }).callId || ''),
+            sessionId: String(exec.agent.id || ''),
+            mode,
+            startedAt,
+            tasks: runTasks.map((tk) => ({
+              id: String(tk.id || tk.label || 'task'),
+              label: String(tk.label || ''),
+              agent: (defFor(tk) || {}).name || '',
+              status: 'pending',
+              lastKey: '',
+            })),
+          })
           let summary = ''
           if (mode === 'pipeline') {
             // pipeline 阶段隔离：单阶段失败按 stageRetry 重试，仍失败则标记 error 并中止后续阶段
@@ -1374,7 +1711,7 @@ async function apply(ctx: Context): Promise<void> {
               let attempt = 0
               while (true) {
                 try {
-                  r = await runWithBudget(() => runOne(subagents, provider, runTasks[i], carry, parent, signal, defFor(runTasks[i]), runId))
+                  r = await runWithBudget(() => runOne(subagents, provider, runTasks[i], carry, parent, signal, defFor(runTasks[i]), runId, spendBudget))
                   break
                 } catch (e) {
                   // 预算等不隔离错误直接中止（不进入阶段重试）
@@ -1419,7 +1756,7 @@ async function apply(ctx: Context): Promise<void> {
                 agent: name,
                 prompt: buildSupervisorPrompt(instruction, merged, t('orch.outputSeparator')),
               }))
-              const reviewerRuns = await poolRun(reviewTasks, Math.max(1, reviewers.length), (tk, i) => runWithBudget(() => runOne(subagents, provider, tk, '', parent, signal, defFor(tk), runId)), makeErrorRun)
+              const reviewerRuns = await poolRun(reviewTasks, Math.max(1, reviewers.length), (tk, i) => runWithBudget(() => runOne(subagents, provider, tk, '', parent, signal, defFor(tk), runId, spendBudget)), makeErrorRun)
               runs = runs.concat(reviewerRuns)
               reviewContext = appendPipelineCarry(merged, reviewerRuns.map((r) => pipelineStageBlock(0, r.label, r.output)).join('\n\n'))
             }
@@ -1432,7 +1769,7 @@ async function apply(ctx: Context): Promise<void> {
                 round === 1 ? reviewContext : appendPipelineCarry(prevOut, reviewContext),
                 t('orch.outputSeparator'),
               )
-              const sup = await runWithBudget(() => runOne(subagents, provider, { id: 'supervisor', label: 'supervisor' + (reviewRounds > 1 ? '#' + round : ''), prompt: roundPrompt }, '', parent, signal, supDef, runId))
+              const sup = await runWithBudget(() => runOne(subagents, provider, { id: 'supervisor', label: 'supervisor' + (reviewRounds > 1 ? '#' + round : ''), prompt: roundPrompt }, '', parent, signal, supDef, runId, spendBudget))
               runs = runs.concat([sup])
               prevOut = sup.output || ''
             }
@@ -1443,14 +1780,14 @@ async function apply(ctx: Context): Promise<void> {
             const merged = summarize(runs.concat(resumeCompleted))
             const instruction = String(mergeInstructions || t('orch.mergeDefault'))
             const reducePrompt = buildSupervisorPrompt(instruction, merged, t('orch.outputSeparator'))
-            const rr = await runWithBudget(() => runOne(subagents, provider, { id: 'reduce', label: 'reduce', prompt: reducePrompt }, '', parent, signal, defaultDef, runId))
+            const rr = await runWithBudget(() => runOne(subagents, provider, { id: 'reduce', label: 'reduce', prompt: reducePrompt }, '', parent, signal, defaultDef, runId, spendBudget))
             runs = runs.concat([rr])
             summary = t('orch.sumMerged', { out: rr.output || t('orch.sumNoOutput') })
           } else if (mode === 'router') {
             // router：从候选任务中路由选择最合适的一项执行（单次调用）
             const instruction = String(mergeInstructions || t('orch.routerDefault'))
             const list = runTasks.map((tk, i) => (i + 1) + '. [' + (tk.label || tk.id || 'task') + '] ' + tk.prompt).join('\n')
-            const rt = await runWithBudget(() => runOne(subagents, provider, { id: 'router', label: 'router', prompt: instruction + '\n\n' + list }, '', parent, signal, defaultDef, runId))
+            const rt = await runWithBudget(() => runOne(subagents, provider, { id: 'router', label: 'router', prompt: instruction + '\n\n' + list }, '', parent, signal, defaultDef, runId, spendBudget))
             runs = [rt]
             summary = t('orch.sumRouter', { out: rt.output || t('orch.sumNoOutput') })
           } else {
@@ -1460,7 +1797,7 @@ async function apply(ctx: Context): Promise<void> {
               const merged = summarize(runs.concat(resumeCompleted))
               const instruction = String(mergeInstructions)
               const mergePrompt = buildSupervisorPrompt(instruction, merged, t('orch.outputSeparator'))
-              const mr = await runWithBudget(() => runOne(subagents, provider, { id: 'merge', label: 'merge', prompt: mergePrompt }, '', parent, signal, defaultDef, runId))
+              const mr = await runWithBudget(() => runOne(subagents, provider, { id: 'merge', label: 'merge', prompt: mergePrompt }, '', parent, signal, defaultDef, runId, spendBudget))
               runs = runs.concat([mr])
               summary = t('orch.sumMerged', { out: mr.output || t('orch.sumNoOutput') })
             } else {
@@ -1494,7 +1831,9 @@ async function apply(ctx: Context): Promise<void> {
             finishedAt: new Date().toISOString(),
             durationMs: Date.now() - startedMs,
             aborted: signal.aborted,
-            resumedFrom: resumedFrom || undefined,
+            // resumedFrom 仅在恢复场景存在；用条件展开避免出现值为 undefined 的键
+            // （网关对 RPC 结果做 JSON 边界校验，undefined 值会被拒）
+            ...(resumedFrom ? { resumedFrom } : {}),
             tasks: recordTasks,
             runs: finalRuns,
             summary: String(summary || ''),
@@ -1504,7 +1843,7 @@ async function apply(ctx: Context): Promise<void> {
             runId,
             mode,
             summary: rec.summary,
-            runs: finalRuns.map((r) => ({ id: r.id, label: r.label, status: r.status })),
+            runs: finalRuns.map((r) => ({ id: r.id, label: r.label, status: r.status, lastKey: r.lastKey || '' })),
             aborted: rec.aborted,
             durationMs: rec.durationMs,
             at: rec.finishedAt,
@@ -1533,16 +1872,17 @@ async function apply(ctx: Context): Promise<void> {
             summary: String((e && (e as Error).message) || e),
           }
           recordRun(failedRec)
-          emitOrchEvent('orch/run-end', { runId, mode: failedRec.mode, summary: failedRec.summary, runs: failedRec.runs.map((r) => ({ id: r.id, label: r.label, status: r.status })), aborted: failedRec.aborted, durationMs: failedRec.durationMs, at: failedRec.finishedAt, error: true })
+          emitOrchEvent('orch/run-end', { runId, mode: failedRec.mode, summary: failedRec.summary, runs: failedRec.runs.map((r) => ({ id: r.id, label: r.label, status: r.status, lastKey: r.lastKey || '' })), aborted: failedRec.aborted, durationMs: failedRec.durationMs, at: failedRec.finishedAt, error: true })
           throw e
         } finally {
           if (slotHeld) releaseOrchSlot()
+          removeActiveRun(runId)
         }
       },
     })
   }
 
-  // list-subagents：按需查询可用自定义子智能体清单（名称/provider/模型/描述）。
+  // list-subagents：按需查询可用自定义子智能体清单（名称/provider/模型/effort/描述）。
   // 清单不再每轮注入系统提示词，模型需要时调用本工具获取（上下文按需加载）。
   function buildListSubagentsTool(): ReturnType<typeof defineTool> {
     return defineTool({
@@ -1563,13 +1903,14 @@ async function apply(ctx: Context): Promise<void> {
                   name: { type: 'string', required: true },
                   provider: { type: 'string' },
                   model: { type: 'string' },
+                  reasoningEffort: { type: 'string' },
                   description: { type: 'string' },
                 },
               },
             },
           },
         },
-        render(args: unknown, value: { agents?: Array<{ name?: string; provider?: string; model?: string; description?: string }> } | null | undefined): ReturnType<typeof renderRunOutput> {
+        render(args: unknown, value: { agents?: Array<{ name?: string; provider?: string; model?: string; reasoningEffort?: string; description?: string }> } | null | undefined): ReturnType<typeof renderRunOutput> {
           const v = value || {}
           const agents = v.agents || []
           if (!Array.isArray(agents) || agents.length === 0) {
@@ -1577,12 +1918,13 @@ async function apply(ctx: Context): Promise<void> {
           }
           const lines = agents.map((a) => {
             const model = (a.provider ? a.provider + '/' : '') + (a.model || t('common.defaultModel'))
-            return '- ' + a.name + ' (' + model + ')' + (a.description ? ': ' + a.description : '')
+            const effort = a.reasoningEffort ? ', effort=' + a.reasoningEffort : ''
+            return '- ' + a.name + ' (' + model + effort + ')' + (a.description ? ': ' + a.description : '')
           })
           return [{ type: 'text', text: t('orch.rosterHead') + '\n' + lines.join('\n') }]
         },
       },
-      async execute(): Promise<{ agents: Array<{ name: string; provider: string; model: string; description: string }> }> {
+      async execute(): Promise<{ agents: Array<{ name: string; provider: string; model: string; reasoningEffort: string; description: string }> }> {
         debugLog('debug', 'orch.list', 'list-subagents 调用', { count: (state.config.orch.agents || []).length })
         const agents = (state.config.orch.agents || [])
           .filter((a) => a && a.name)
@@ -1590,6 +1932,7 @@ async function apply(ctx: Context): Promise<void> {
             name: String(a.name),
             provider: String(a.provider || ''),
             model: String(a.model || ''),
+            reasoningEffort: String(a.reasoningEffort || ''),
             description: String(a.description || ''),
           }))
         return { agents }
@@ -1678,18 +2021,18 @@ async function apply(ctx: Context): Promise<void> {
           }
           const custom = String(ctxCfg.text || '').trim()
           if (custom) {
-            injectionStatus.lastEval = { mode: 'custom', chars: custom.length, subagent: isSub || undefined }
+            injectionStatus.lastEval = { mode: 'custom', chars: custom.length, ...(isSub ? { subagent: true } : {}) }
             debugLog('debug', 'ctx.inject.eval', '上下文注入求值：自定义内容', { enabled: true, mode: 'custom', chars: custom.length, subagent: isSub })
             return custom
           }
           const orch = state.config && state.config.orch
           if (orch && orch.enabled) {
             const hint = t('orch.hintSection')
-            injectionStatus.lastEval = { mode: 'default', chars: hint.length, subagent: isSub || undefined }
+            injectionStatus.lastEval = { mode: 'default', chars: hint.length, ...(isSub ? { subagent: true } : {}) }
             debugLog('debug', 'ctx.inject.eval', '上下文注入求值：默认自动编排引导', { enabled: true, mode: 'fallback', language: langState.active, subagent: isSub })
             return hint
           }
-          injectionStatus.lastEval = { mode: 'empty', chars: 0, subagent: isSub || undefined }
+          injectionStatus.lastEval = { mode: 'empty', chars: 0, ...(isSub ? { subagent: true } : {}) }
           debugLog('debug', 'ctx.inject.eval', '上下文注入求值：无可用内容', { enabled: true, mode: 'empty', subagent: isSub })
           return ''
         },
@@ -1794,12 +2137,12 @@ async function apply(ctx: Context): Promise<void> {
   async function haDiagText(): Promise<string> {
     const lines: string[] = [t('diag.title')]
     // 服务可用性
-    const svc = (name: string, present: boolean): string => {
+    const svc = (name: string): string => {
       const v = getService<unknown>(ctx, name)
       return '  - ' + name + ': ' + (v != null ? t('diag.available') : t('diag.missing'))
     }
     for (const name of ['tools', 'systemPrompt', 'subagents', 'llm', 'fs', 'timer', 'settings', 'agents', 'agentDefaultModel', 'sandboxPolicy', 'commands', 'skills']) {
-      lines.push(svc(name, true))
+      lines.push(svc(name))
     }
     // 配置与持久化
     lines.push(t('diag.persist') + ': ' + (persistState.ok ? persistState.path : t('diag.persistFail') + (persistState.error ? ' (' + persistState.error + ')' : '')))
@@ -1828,7 +2171,8 @@ async function apply(ctx: Context): Promise<void> {
         const provider = parts[1] || ''
         const model = parts[2] || ''
         if (!provider || !model) return { kind: 'error', text: t('ha.probeUsage') }
-        const res = await runProbe(keyOf(provider, model))
+        // force=true：与设置页 haProbeNow RPC 一致，未隔离的键也立即真实探测
+        const res = await runProbe(keyOf(provider, model), true)
         return {
           kind: 'success',
           text: res.ok
@@ -1924,17 +2268,7 @@ async function apply(ctx: Context): Promise<void> {
       const parts = String((invocation && invocation.input) || '').trim().split(/\s+/).filter(Boolean)
       const verb = (parts[0] || 'runs').toLowerCase()
       // 合并内存与磁盘：磁盘不可用或尚未落盘时，命令仍能看到内存中的 run
-      const diskRuns = await readRunsFromDisk()
-      const byId = new Map<string, RunRecord>()
-      for (const r of state.runs) byId.set(r.runId, r)
-      for (const r of diskRuns) if (!byId.has(r.runId)) byId.set(r.runId, r)
-      const all = [...byId.values()].sort((a, b) => {
-        const at = String(a.startedAt || '')
-        const bt = String(b.startedAt || '')
-        if (at < bt) return 1
-        if (at > bt) return -1
-        return 0
-      })
+      const all = await mergedRunRecords()
       if (verb === 'presets') {
         const presets = state.config.orch.presets || []
         if (presets.length === 0) return { kind: 'success', text: t('orch.presetNone') }
@@ -1955,10 +2289,10 @@ async function apply(ctx: Context): Promise<void> {
         ]
         for (const r of rec.runs) {
           const head = '- [' + r.status + '] ' + (r.label || r.id) + (r.agent ? ' via ' + r.agent : '')
-          const body = String(r.output || '').slice(0, 500)
+          const body = String(r.output || '').slice(0, 2000)
           lines.push(head + (body ? '\n  ' + body : ''))
         }
-        lines.push('---\n' + String(rec.summary || '').slice(0, 800))
+        lines.push('---\n' + String(rec.summary || '').slice(0, 2000))
         return { kind: 'success', text: lines.join('\n') }
       }
       // runs：最近 10 条
@@ -2017,6 +2351,18 @@ async function apply(ctx: Context): Promise<void> {
     // 插件语言变化 -> 重新应用语言（失败自动回滚 zh），工具文案随之重建
     if (langChanged) await applyLanguage().catch((e) => console.error('[ha] apply language failed', e))
   }
+  // 网关对 RPC 结果做 JSON 边界校验：结果树中任何 undefined / NaN / 循环引用 /
+  // 非纯对象 / getter 都会被拒（"business result failed boundary validation"）。
+  // 所有返回给设置页的 RPC 结果统一经 jsonSafe 过一道，保证外部服务数据
+  // （如 agentDefaultModel.currentSelection）或内部字段遗漏都不会让配置页报错。
+  function jsonSafe<T>(value: T, fallback: T): T {
+    try {
+      return JSON.parse(JSON.stringify(value)) as T
+    } catch (e) {
+      console.error('[ha] RPC 结果 JSON 安全化失败，返回兜底', e)
+      return fallback
+    }
+  }
   function buildState(extra?: Record<string, unknown>): StateSnapshot & Record<string, unknown> {
     clearExpired()
     const out: StateSnapshot & Record<string, unknown> = {
@@ -2026,13 +2372,33 @@ async function apply(ctx: Context): Promise<void> {
       persist: persistState,
       i18n: i18nSnapshot(),
       ctxInject: injectionStatusSnapshot(),
+      hostTools: hostToolList(),
     }
     for (const [k, v] of state.quarantine) {
       const parts = splitKey(k)
-      out.quarantine.push({ provider: parts[0], model: parts[1], code: v.code, remainingMs: Math.max(0, v.until - now()) })
+      out.quarantine.push({ provider: parts[0], model: parts[1], code: v.code || '', remainingMs: Math.max(0, v.until - now()) })
     }
     if (extra) for (const key of Object.keys(extra)) out[key] = extra[key]
-    return out
+    // JSON 安全化（undefined 键会被 JSON.stringify 丢弃，NaN 变 null）
+    return jsonSafe(out, {
+      config: state.config,
+      quarantine: [],
+      history: [],
+      persist: persistState,
+      i18n: i18nSnapshot(),
+      ctxInject: injectionStatusSnapshot(),
+    })
+  }
+  // 宿主可见工具名（设置页 tools allow/deny 提示用；tools 服务不可枚举时为空数组）
+  function hostToolList(): string[] {
+    try {
+      const tools = getService<ToolsServiceLike>(ctx, 'tools')
+      if (!tools || typeof tools.schemas !== 'function') return []
+      const schemas = tools.schemas() || []
+      return schemas.map((s) => String((s && s.name) || '')).filter(Boolean).slice(0, 200)
+    } catch {
+      return []
+    }
   }
   function llmProviderList(): Array<{ provider: string; name: string }> {
     let llmProviders: Array<{ provider: string; name: string }> = []
@@ -2242,9 +2608,11 @@ async function apply(ctx: Context): Promise<void> {
     // HA 运行态详情：隔离（含层级）/失败计数/游标/历史/探测记录
     haStatus(): Record<string, unknown> {
       clearExpired()
+      const defaultSel = currentDefaultSelection()
       const out: Record<string, unknown> = {
         enabled: state.config.ha.enabled,
-        defaultSelection: currentDefaultSelection(),
+        // 外部服务数据可能携带 undefined 字段，规整为字符串/null（网关边界校验拒绝 undefined）
+        defaultSelection: defaultSel ? { provider: defaultSel.provider || '', model: defaultSel.model || '' } : null,
         config: {
           backups: state.config.ha.backups,
           cooldownMs: state.config.ha.cooldownMs,
@@ -2280,7 +2648,16 @@ async function apply(ctx: Context): Promise<void> {
       for (const [agentId, e] of state.perAgent) {
         ;(out.cursors as Array<Record<string, unknown>>).push({ agent: agentId, index: e.index || 0, lastKey: e.lastKey || '', retries: e.retries || 0, failCode: e.failCode || '', steeredTurn: e.steeredTurn || 0, degradeReasoning: !!e.degradeReasoning })
       }
-      return out
+      return jsonSafe(out, {
+        enabled: !!state.config.ha.enabled,
+        defaultSelection: null,
+        config: { backups: [], cooldownMs: 0, threshold: 0, burstWindowMs: 0, providerThreshold: 0, probeEnabled: false, degradeContextWindow: false, codes: [] },
+        quarantine: [],
+        failures: [],
+        cursors: [],
+        history: [],
+        probes: { last: [], pending: [] },
+      })
     }
     // 手动触发探测：隔离中的键 -> 成功后解除隔离；未隔离的键 -> 仅探测不改状态
     async haProbeNow(args: { provider?: string; model?: string }): Promise<{ ok: boolean; reason?: string; key: string }> {      const provider = args && args.provider ? String(args.provider) : ''
@@ -2290,7 +2667,8 @@ async function apply(ctx: Context): Promise<void> {
       return runProbe(keyOf(provider, model), true)
     }
     // 推荐备份候选：从已注册 provider x 模型目录挑选（排除当前默认选择），供配置向导使用
-    async haSuggestBackups(): Promise<Array<{ provider: string; model: string; name: string }>> {      const suggestions: Array<{ provider: string; model: string; name: string }> = []
+    async haSuggestBackups(): Promise<Array<{ provider: string; model: string; name: string }>> {
+      const suggestions: Array<{ provider: string; model: string; name: string }> = []
       const defaultSel = currentDefaultSelection()
       const llm = getService<LlmService>(ctx, 'llm')
       if (!llm) return suggestions
@@ -2299,12 +2677,16 @@ async function apply(ctx: Context): Promise<void> {
       for (const p of providers) {
         const provider = String((p && (p as { id?: string }).id) || (p as { provider?: string }).provider || (p as { name?: string }).name || p)
         if (!provider) continue
-        if (defaultSel && defaultSel.provider === provider) continue
         let models: Array<{ provider?: string; id?: string; model?: string; name?: string } | string> = []
         try { models = await llm.listModels(provider) } catch (e) { models = [] }
         for (const m of models) {
           const model = String((m && (m as { id?: string }).id) || (m as { model?: string }).model || (m as { name?: string }).name || m)
           if (!model) continue
+          // 只排除默认选择本身（provider+model 精确匹配），不再排除整个 provider：
+          // 同 provider 的其他模型仍是有效备份候选。
+          if (defaultSel && defaultSel.provider === provider && defaultSel.model === model) continue
+          // 已隔离/熔断的键不推荐（用户正遇到故障的模型不应进入备份建议）
+          if (isBlocked(provider, model)) continue
           const name = String((m && (m as { name?: string }).name) || model)
           suggestions.push({ provider, model, name })
           if (suggestions.length >= 20) return suggestions
@@ -2312,9 +2694,14 @@ async function apply(ctx: Context): Promise<void> {
       }
       return suggestions
     }
-    // 最近 run 列表（内存，供 UI Run 面板轮询）
-    orchRuns(): { runs: RunRecord[] } {
-      return { runs: state.runs.slice(0, RUN_MEM_CAP) }
+    // 最近 run 列表（内存 + 磁盘合并，供 UI Run 面板轮询；重启后历史仍可见）
+    async orchRuns(): Promise<{ runs: RunRecord[] }> {
+      const all = await mergedRunRecords()
+      return jsonSafe({ runs: all.slice(0, RUN_MEM_CAP) }, { runs: [] })
+    }
+    // 运行中 run 列表（内存，供对话内 orchestrate 卡片实时进度轮询）
+    orchActive(): { runs: ActiveRunView[] } {
+      return jsonSafe({ runs: activeRunsSnapshot() }, { runs: [] })
     }
     // 加载/运行诊断：服务可用性、持久化、语言、注入状态（排障用）
     diagnostics(): Record<string, unknown> {
@@ -2324,7 +2711,7 @@ async function apply(ctx: Context): Promise<void> {
         const v = getService<unknown>(ctx, n)
         services[n] = { present: v != null }
       }
-      return {
+      return jsonSafe({
         services,
         persist: persistState,
         configLoaded,
@@ -2332,7 +2719,15 @@ async function apply(ctx: Context): Promise<void> {
         language: { active: langState.active, rollback: langState.rollback, reason: langState.rollbackReason },
         injection: injectionStatusSnapshot(),
         probeEnabled: state.config.ha.probeEnabled,
-      }
+      }, {
+        services: {},
+        persist: persistState,
+        configLoaded,
+        haStateLoaded,
+        language: { active: langState.active, rollback: langState.rollback, reason: langState.rollbackReason || '' },
+        injection: { registered: false, order: 0, reason: '', lastEval: null },
+        probeEnabled: !!state.config.ha.probeEnabled,
+      })
     }
     // ---- 配方（预设）管理 ----
     orchListPresets() {
@@ -2360,6 +2755,8 @@ async function apply(ctx: Context): Promise<void> {
     }
     async orchDeletePreset(args: { name?: string }) {
       const name = args && args.name ? String(args.name) : ''
+      // 空名称拒绝执行：否则 filter(p => p.name !== '') 会误删全部配方
+      if (!name) throw new Error(t('orch.errPresetName'))
       state.config.orch.presets = (state.config.orch.presets || []).filter((p) => p && p.name !== name)
       await persistConfig()
       return { presets: state.config.orch.presets.slice() }
@@ -2385,6 +2782,7 @@ async function apply(ctx: Context): Promise<void> {
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haProbeNow', 'haProbeNow', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'haSuggestBackups', 'haSuggestBackups', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'orchRuns', 'orchRuns', remoteInitializers)
+  decorateRemoteMethod(Remote, HaOrchestratorRpc, 'orchActive', 'orchActive', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'diagnostics', 'diagnostics', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'orchListPresets', 'orchListPresets', remoteInitializers)
   decorateRemoteMethod(Remote, HaOrchestratorRpc, 'orchSavePreset', 'orchSavePreset', remoteInitializers)
@@ -2410,6 +2808,7 @@ async function apply(ctx: Context): Promise<void> {
     { method: 'haProbeNow', args: true },
     { method: 'haSuggestBackups', args: false },
     { method: 'orchRuns', args: false },
+    { method: 'orchActive', args: false },
     { method: 'diagnostics', args: false },
     { method: 'orchListPresets', args: false },
     { method: 'orchSavePreset', args: true },
@@ -2444,6 +2843,22 @@ async function apply(ctx: Context): Promise<void> {
   }
   installTypertRemoteDescriptors()
   new HaOrchestratorRpc()
+  // 统一停止清理：阻止残留活动（探测定时器/HA 防抖）在插件停止后继续写已停上下文，
+  // 并 flush 未落盘的 HA 运行态，防止防抖标志卡死导致停机前最后一段状态丢失。
+  ctx.effect(() => () => {
+    pluginDisposed = true
+    pendingProbes.clear()
+    // 唤醒所有等待全局并发槽的 orchestrate：避免其 Promise 永久挂起
+    //（醒来后执行会在已停上下文上失败并走既有 error 留痕路径）
+    while (orchWaiters.length > 0) {
+      const next = orchWaiters.shift()
+      if (next) next()
+    }
+    if (haPersistPending) {
+      haPersistPending = false
+      void persistHaState().catch((e) => console.error('[ha] flush HA state on dispose failed', e))
+    }
+  })
 }
 
 export { apply, inject, name }

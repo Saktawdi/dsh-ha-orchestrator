@@ -26,8 +26,14 @@ export interface AgentEntry {
   name: string
   provider: string
   model: string
+  /** 模型推理强度；留空 = 使用 provider/model 默认值。 */
+  reasoningEffort?: string
   description: string
   systemPrompt: string
+  /** 工具裁剪（可选）：allow 白名单 / deny 黑名单，工具名以宿主全局注册为准；provider 不支持时自动剥离。 */
+  tools?: { allow?: string[]; deny?: string[] }
+  /** 该子智能体独立的模型回退链；为空/未配置时不启用编排层回退。 */
+  fallbacks?: BackupEntry[]
 }
 
 /** HA（模型高可用）配置节。 */
@@ -72,6 +78,16 @@ export interface OrchConfig {
   globalConcurrency: number
   /** 已保存的编排配方。 */
   presets: OrchPreset[]
+  /** merge/supervisor/reduce 输入的每任务正文字符上限（0 = 用代码默认值）。 */
+  mergeBodyLimit: number
+  /** merge/supervisor/reduce 输入的总字符上限（0 = 用代码默认值）。 */
+  mergeTotalLimit: number
+  /** 工具结果渲染的每任务输出字符上限（0 = 用代码默认值）。 */
+  renderRunLimit: number
+  /** 工具结果渲染的总字符上限（0 = 用代码默认值）。 */
+  renderTotalLimit: number
+  /** 子智能体委托深度平台级硬上限（0 = 关闭；1 = 子智能体不能再委托）。 */
+  maxDepth: number
 }
 
 /** 调试配置节。 */
@@ -128,13 +144,21 @@ export const defaultConfig: Config = {
   orch: {
     enabled: true,
     provider: '',
-    concurrency: 3,
-    maxAgents: 8,
+    // 并发默认 6：调研类任务子任务多、单任务耗时长，3 并发明显偏慢（用户已手动调 8）
+    concurrency: 6,
+    maxAgents: 16,
     // pipeline 阶段失败默认不重试：失败阶段标记 error 并中止后续阶段（阶段隔离）
     stageRetry: 0,
     // 全局并发上限默认不限（0）；单 run 并发由 concurrency/maxAgents 控制
     globalConcurrency: 0,
     presets: [],
+    // 截断上限与代码默认保持一致（orch-runner.ts 内的 fallback），可按模型上下文调整
+    mergeBodyLimit: 8000,
+    mergeTotalLimit: 48000,
+    renderRunLimit: 8000,
+    renderTotalLimit: 60000,
+    // 委托深度兜底默认关闭（0）；开启 1 可从平台层禁止子智能体再委托
+    maxDepth: 0,
     agents: [
       {
         name: 'reviewer',
@@ -142,7 +166,21 @@ export const defaultConfig: Config = {
         provider: '',
         model: '',
         description: '代码审查专家：检查代码质量、发现 bug 与安全隐患，输出结构化审查意见。',
-        systemPrompt: '你是一名资深代码审查员。审查时给出：1) 问题清单（严重程度+位置+原因）2) 修复建议 3) 总体评价。',
+        systemPrompt: '你是一名资深代码审查员。审查时给出：1) 问题清单（严重程度+位置+原因） 2) 修复建议 3) 总体评价。',
+      },
+      {
+        name: 'researcher',
+        provider: '',
+        model: '',
+        description: '调研执行者：并行调研 GitHub 仓库/npm 包/文档，产出带来源链接的结构化事实报告，适合编排拆分的多目标调研任务。',
+        systemPrompt: '你是调研执行者。任务：就给定对象（仓库/包/主题）做尽职调查，只陈述可核实的事实。\n方法：优先查官方源（GitHub 仓库、README、release/commit、npm 页面），交叉验证后再下结论；每条关键结论都附来源 URL 与观测日期。\n输出格式：1) 一句话结论 2) 事实清单（带证据 URL）3) 数据指标（star/版本/最近发布等，注明取数时间）4) 不确定/未能核实项。禁止臆造数据；查不到就明说。',
+      },
+      {
+        name: 'research-merger',
+        provider: '',
+        model: '',
+        description: '调研汇总者：把多个调研子任务的报告合并为一份完整汇总，保留全部证据与出处，不引入新事实。',
+        systemPrompt: '你是调研汇总者。输入是多份调研子报告。任务：按主题合并为一份结构化汇总。\n规则：保留每条事实的来源 URL；子报告间冲突时并列呈现并标注来源，不擅自裁决；不添加子报告中没有的新事实；结尾列出信息缺口。输出使用清晰的分节 markdown。',
       },
     ],
   },
@@ -178,6 +216,37 @@ function asBool(v: unknown): boolean {
   return !!v
 }
 
+/** 把任意值规整为去空白非空字符串数组。 */
+function asNameList(v: unknown): string[] {
+  return Array.isArray(v) ? v.map((x) => String(x || '').trim()).filter(Boolean) : []
+}
+
+/** 规整工具裁剪配置：allow/deny 任一非空才保留，否则返回 undefined（字段不落盘）。 */
+function asToolFilter(v: unknown): { allow?: string[]; deny?: string[] } | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const raw = v as { allow?: unknown; deny?: unknown }
+  const allow = asNameList(raw.allow)
+  const deny = asNameList(raw.deny)
+  if (!allow.length && !deny.length) return undefined
+  const out: { allow?: string[]; deny?: string[] } = {}
+  if (allow.length) out.allow = allow
+  if (deny.length) out.deny = deny
+  return out
+}
+
+/** 规整备用模型链：复用主 HA 的 provider/model/reasoningEffort 数据形状。 */
+function asBackupList(v: unknown): BackupEntry[] {
+  return Array.isArray(v)
+    ? v.filter((b: BackupEntry | RawSection) => !!b && typeof b === 'object')
+      .map((b: BackupEntry | RawSection) => ({
+        label: asString(b.label),
+        provider: asString(b.provider),
+        model: asString(b.model),
+        reasoningEffort: b.reasoningEffort ? asString(b.reasoningEffort) : '',
+      })).filter((b) => b.provider && b.model)
+    : []
+}
+
 /**
  * 对完整配置做校验合并。只保留出现在 patch 中的节，其余节保持 base 对应节原样；
  * 返回全新对象，不修改传入的 patch 与 base。
@@ -202,15 +271,7 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
       ha.probeEnabled = asBool(ha.probeEnabled)
       ha.degradeContextWindow = asBool(ha.degradeContextWindow)
       ha.codes = Array.isArray(ha.codes) ? ha.codes.map(String).filter(Boolean) : []
-      ha.backups = Array.isArray(ha.backups)
-        ? ha.backups.filter((b: BackupEntry | RawSection) => !!b && typeof b === 'object')
-          .map((b: BackupEntry | RawSection) => ({
-            label: asString(b.label),
-            provider: asString(b.provider),
-            model: asString(b.model),
-            reasoningEffort: b.reasoningEffort ? asString(b.reasoningEffort) : '',
-          })).filter((b) => b.provider && b.model)
-        : []
+      ha.backups = asBackupList(ha.backups)
       next.ha = ha as HaConfig
     }
     if (raw.orch && typeof raw.orch === 'object') {
@@ -221,6 +282,11 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
       orch.maxAgents = Math.max(1, Math.min(64, Number(orch.maxAgents) || 1))
       orch.stageRetry = Math.max(0, Math.min(5, Number(orch.stageRetry) || 0))
       orch.globalConcurrency = Math.max(0, Math.min(64, Number(orch.globalConcurrency) || 0))
+      orch.mergeBodyLimit = Math.max(0, Math.min(100000, Number(orch.mergeBodyLimit) || 0))
+      orch.mergeTotalLimit = Math.max(0, Math.min(400000, Number(orch.mergeTotalLimit) || 0))
+      orch.renderRunLimit = Math.max(0, Math.min(100000, Number(orch.renderRunLimit) || 0))
+      orch.renderTotalLimit = Math.max(0, Math.min(400000, Number(orch.renderTotalLimit) || 0))
+      orch.maxDepth = Math.max(0, Math.min(8, Number(orch.maxDepth) || 0))
       orch.presets = Array.isArray(orch.presets)
         ? (orch.presets as unknown as RawSection[]).filter((p): p is RawSection => !!p && typeof p === 'object' && !!String(p.name || '').trim())
           .map((p: RawSection) => ({
@@ -242,13 +308,25 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
         : []
       orch.agents = Array.isArray(orch.agents)
         ? orch.agents.filter((a: AgentEntry | RawSection) => !!a && typeof a === 'object' && String(a.name || '').trim())
-          .map((a: AgentEntry | RawSection) => ({
-            name: String(a.name || '').trim(),
-            provider: asString(a.provider),
-            model: asString(a.model),
-            description: asString(a.description),
-            systemPrompt: asString(a.systemPrompt),
-          }))
+          .map((a: AgentEntry | RawSection) => {
+            const entry: AgentEntry = {
+              name: String(a.name || '').trim(),
+              provider: asString(a.provider),
+              model: asString(a.model),
+              description: asString(a.description),
+              systemPrompt: asString(a.systemPrompt),
+            }
+            const reasoningEffort = String(a.reasoningEffort || '').trim()
+            if (reasoningEffort) entry.reasoningEffort = reasoningEffort
+            const tools = asToolFilter(a.tools)
+            if (tools) entry.tools = tools
+            // fallbacks 与 ha.backups 使用同一条目形状，但存放在 AgentEntry
+            // 内，保证每个编排角色可以拥有独立、可复用的回退链。
+            if (Object.prototype.hasOwnProperty.call(a, 'fallbacks')) {
+              entry.fallbacks = asBackupList(a.fallbacks)
+            }
+            return entry
+          })
         : []
       next.orch = orch as OrchConfig
     }

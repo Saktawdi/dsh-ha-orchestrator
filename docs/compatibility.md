@@ -1,7 +1,7 @@
 # dsh-ha-orchestrator 兼容矩阵
 
 > 状态：维护中（随每个 DSH rc / Node / 平台验证而更新）
-> 适用版本：本文件描述 **v0.7.0 对应源码** 的兼容事实，基于代码而非承诺。
+> 适用版本：本文件描述 **v0.12.0 对应源码** 的兼容事实，基于代码而非承诺。
 
 本文件记录 dsh-ha-orchestrator 与 DeepSeek Harness（dsh）、Node、平台及相邻插件的兼容边界。
 目标读者：安装者（确认当前环境是否受支持）、维护者（升级/发布前核对）、插件作者（了解协作层级）。
@@ -12,10 +12,10 @@
 
 | 组件 | 已验证版本线 | 验证方式 |
 | --- | --- | --- |
-| DSH 核心 | **0.1.0-rc.6**（`@deepseek-ai/dsh` 及 `dsh-*` 同线） | CI + 本机 |
+| DSH / dsh-* | **0.1.0-rc.6 peer 线**（本仓库不直接锁定 `@deepseek-ai/dsh` 核心包） | peerDependencies + 本地/CI 门禁 |
 | Cordis | **4.0.1**（`@deepseek-ai/cordis`） | CI + 本机 |
 | Node（engines） | **>=20.19** | `package.json` engines |
-| Node（CI 验证） | **22.23**（GitHub Actions：Linux + Windows） | `typecheck / build / check / test / verify` 全链路 |
+| Node（CI 验证） | **22**（GitHub Actions：Linux + Windows） | `typecheck / build / check / test / verify` 全链路 |
 | 平台（CI） | Linux、Windows | GitHub Actions 双 job |
 | 平台（本机） | **Windows + dsh web 热重载验证通过** | 真实 dsh 环境 `dsh plugin add "file:<repo>"` 后工具 / HA 事件 / 上下文注入可用 |
 
@@ -67,7 +67,7 @@
 - `ctx.subagents`（子智能体提供方：`list` / `start` / `result` / `dispose` / 真实 `AbortSignal`）
 - `ctx.llm`（`listProviders` / `listModels` / 探针 `stream`）
 - `agent/*` 事件（`agent/request`、`agent/request-error`、`agent/error`）
-- 内部消费服务经 `getService()` 按名称取用（`fs`、`timer`、`agents`、`settings`、`sandboxPolicy`、`agentDefaultModel`、`commands`）
+- 内部消费服务经 `getService()` 按名称取用（`fs`、`timer`、`agents`、`settings`、`sandboxPolicy`、`agentDefaultModel`、`commands`、`skills`、`typert`）
 
 不做核心 patch；坚持 mount-only / bundle-only（`dsh.bundle.patch` + `cordis.patch.yml`）。
 
@@ -112,16 +112,30 @@
 
 ---
 
-## 5. 已知风险与应对
+## 5. 可选服务与降级行为
+
+| 服务 | 缺失时的行为 |
+| --- | --- |
+| `commands` | 插件仍可运行；仅 `/ha` 与 `/orchestrate` 命令不可用。 |
+| `skills` | 插件仍可运行；不注册随包 skill。 |
+| `typert` | 依赖 Remote marker 的回退路径；若宿主无法识别 marker，设置页 RPC 可能不可见。 |
+| `fs` / `sandboxPolicy` / `agents` / `launchEnvironment` | 配置、HA 状态或 run 记录的持久化能力可能降级；设置页诊断会暴露服务与写入状态。 |
+| provider capabilities | `toolFilter`、`outputSchema`、`maxDepth` 等不支持的字段会在子智能体启动前自动剥离。 |
+
+插件只把 `tools` 与 `systemPrompt` 作为必需注入服务；其它服务均通过 `getService()` 惰性获取，并在适用处重试或降级。
+
+---
+
+## 6. 已知风险与应对
 
 | 风险 | 影响 | 应对 |
 | --- | --- | --- |
 | DSH 仍为 rc 阶段，API 频繁变化 | 插件易碎、升级被破坏 | 只用公开稳定接缝；peer 精确卡 rc 线；兼容矩阵 + CI 快照（本文件即矩阵中心） |
 | 新 rc 引入的服务类型变动 | `tsc` 构建失败 | 类型经 `src/types.ts` 最小结构契约隔离，不直连 `dsh-*` 服务类型，rc 类型变动不破坏构建 |
 | 与 `dsh-agent-teams` 等同时安装 | 提示词 / 工具互相干扰 | 工具名唯一；`context injection` 提供开关；文档说明组合用法 |
-| 自建持久化（JSON 文件）与官方 seam 冲突 | 升级破坏 | 优先 `storageDomain` / settings / session events 迁移（路线图 Phase） |
+| 自建持久化（JSON/Markdown 文件）与官方 seam 冲突 | 升级破坏或数据残留 | 优先 `storageDomain` / settings / session events 迁移；run Markdown 工件当前需手动清理 |
 | 未经验证的 rc / Node / 平台 | 安装或运行失败 | 每次验证后同步更新本文件快照；未列出即未验证 |
 
 ---
 
-*文档基于 v0.7.0 源码事实编写，随版本迭代与 DSH rc 验证持续更新。*
+*文档基于 v0.12.0 源码事实编写，随版本迭代与 DSH rc 验证持续更新。未列出的 DSH rc、Node 或平台均视为未验证。*

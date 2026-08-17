@@ -25,16 +25,28 @@ test('defaultConfig 深层结构正确', () => {
 
   assert.equal(defaultConfig.orch.enabled, true)
   assert.equal(defaultConfig.orch.provider, '')
-  assert.equal(defaultConfig.orch.concurrency, 3)
-  assert.equal(defaultConfig.orch.maxAgents, 8)
+  assert.equal(defaultConfig.orch.concurrency, 6)
+  assert.equal(defaultConfig.orch.maxAgents, 16)
+  // 截断上限与深度兜底默认值
+  assert.equal(defaultConfig.orch.mergeBodyLimit, 8000)
+  assert.equal(defaultConfig.orch.mergeTotalLimit, 48000)
+  assert.equal(defaultConfig.orch.renderRunLimit, 8000)
+  assert.equal(defaultConfig.orch.renderTotalLimit, 60000)
+  assert.equal(defaultConfig.orch.maxDepth, 0)
   assert.ok(Array.isArray(defaultConfig.orch.agents))
-  assert.equal(defaultConfig.orch.agents.length, 1)
+  assert.equal(defaultConfig.orch.agents.length, 3)
   const reviewer = defaultConfig.orch.agents[0]
   assert.equal(reviewer.name, 'reviewer')
   assert.equal(reviewer.provider, '')
   assert.equal(reviewer.model, '')
   assert.ok(reviewer.description)
   assert.ok(reviewer.systemPrompt)
+  // 内置调研预设：researcher / research-merger（供 GitHub 调研编排直接选用）
+  assert.equal(defaultConfig.orch.agents[1].name, 'researcher')
+  assert.ok(defaultConfig.orch.agents[1].description)
+  assert.ok(defaultConfig.orch.agents[1].systemPrompt)
+  assert.equal(defaultConfig.orch.agents[2].name, 'research-merger')
+  assert.ok(defaultConfig.orch.agents[2].systemPrompt)
 
   assert.equal(defaultConfig.debug.enabled, false)
   assert.equal(defaultConfig.debug.showCard, false)
@@ -179,6 +191,75 @@ test('orch.agents：name 为空被丢弃，字段被规整为字符串', () => {
       systemPrompt: '',
     },
   ])
+})
+
+test('orch.agents：主模型 reasoningEffort 独立规整，空值不落字段', () => {
+  const res = sanitizeConfig({
+    orch: {
+      agents: [
+        { name: 'thinker', provider: 'p1', model: 'm1', reasoningEffort: ' high ' },
+        { name: 'default-effort', reasoningEffort: '   ' },
+      ],
+    },
+  }, defaultConfig)
+  assert.equal(res.orch.agents[0].reasoningEffort, 'high')
+  assert.equal('reasoningEffort' in res.orch.agents[1], false)
+})
+
+test('orch.agents：tools 规整为去空白名单，空名单不落字段', () => {
+  const patch = {
+    orch: {
+      agents: [
+        { name: 'researcher', tools: { allow: [' read ', '', 'web_fetch'], deny: [] } },
+        { name: 'plain', tools: {} },                      // 空 -> 无 tools 字段
+        { name: 'junk', tools: { allow: 'not-array' } },   // 非数组 -> 无 tools 字段
+        { name: 'denier', tools: { deny: [' write ', ''] } },
+      ],
+    },
+  }
+  const res = sanitizeConfig(patch, defaultConfig)
+  assert.deepEqual(res.orch.agents[0].tools, { allow: ['read', 'web_fetch'] })
+  assert.equal('tools' in res.orch.agents[0] === false, false)   // 有 tools 字段
+  assert.equal('tools' in res.orch.agents[1], false)
+  assert.equal('tools' in res.orch.agents[2], false)
+  assert.deepEqual(res.orch.agents[3].tools, { deny: ['write'] })
+})
+
+test('orch.agents：每个子智能体的 fallbacks 独立规整，复用 backup 条目形状', () => {
+  const res = sanitizeConfig({
+    orch: {
+      agents: [
+        {
+          name: 'researcher',
+          provider: 'p0',
+          model: 'm0',
+          fallbacks: [
+            { label: '备用一', provider: 'p1', model: 'm1', reasoningEffort: 'high' },
+            { provider: 'p2', model: 'm2' },
+            { provider: 'p3', model: '' },
+            null,
+          ],
+        },
+        { name: 'plain' },
+        { name: 'disabled', fallbacks: 'not-array' },
+      ],
+    },
+  }, defaultConfig)
+  assert.deepEqual(res.orch.agents[0].fallbacks, [
+    { label: '备用一', provider: 'p1', model: 'm1', reasoningEffort: 'high' },
+    { label: '', provider: 'p2', model: 'm2', reasoningEffort: '' },
+  ])
+  assert.equal('fallbacks' in res.orch.agents[1], false)
+  assert.deepEqual(res.orch.agents[2].fallbacks, [])
+})
+
+test('orch 截断上限与 maxDepth：钳制与 0 透传', () => {
+  const res = sanitizeConfig({ orch: { mergeBodyLimit: 999999, mergeTotalLimit: -5, renderRunLimit: 12000, renderTotalLimit: 0, maxDepth: 99 } }, defaultConfig)
+  assert.equal(res.orch.mergeBodyLimit, 100000)
+  assert.equal(res.orch.mergeTotalLimit, 0)
+  assert.equal(res.orch.renderRunLimit, 12000)
+  assert.equal(res.orch.renderTotalLimit, 0)
+  assert.equal(res.orch.maxDepth, 8)
 })
 
 test('orch.agents：非数组清空', () => {

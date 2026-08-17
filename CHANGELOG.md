@@ -2,6 +2,60 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.12.0] - 2026-08-17
+
+产品化视觉升级（UI 全面重构 + 发布前收尾）。视觉对齐 DSH 原生主题（`dsw-alias` 变量 + 局部设计令牌，浅/深色自动适配），并完成路线图 Phase 6 遗留功能项。
+
+### Added — 调研能力（本轮本地开发）
+- **子智能体工具裁剪（toolFilter）全链路**：自定义子智能体新增可选 `tools: { allow?, deny? }` 配置，经 `buildSubagentRequest` 清洗后透传给 dsh-subagent 的 `SubagentStartRequest.toolFilter`；`runOne` 在 start 前经 `getProvider().capabilities` 做能力门控，provider 声明不支持时自动剥离并记 debug 日志（避免服务层拒绝导致整个子任务失败）。设置页 agents 表单新增白名单/黑名单编辑行（逗号/空格分隔）并展示宿主可用工具名（`stateGet` 新增 `hostTools`）。
+- **结构化调研输出（outputSchema）**：`orchestrate` 的 tasks 条目新增 `outputHint`（输出要求提示，追加到子任务 prompt）与 `outputSchema`（object 根 JSON Schema）；provider 支持时子智能体返回匹配 JSON，并以 `[structured] {json}` 行内嵌到该 run 输出开头——merge 输入、结果渲染、runs.jsonl、md 工件全链路可见；能力门控同 toolFilter。
+- **委托深度平台级兜底（maxDepth）**：新配置 `orch.maxDepth`（0=关闭；1=子智能体不能再委托），与既有嵌套编排拒绝形成双保险；能力门控同上。
+- **内置调研预设子智能体**：`defaultConfig.orch.agents` 新增 `researcher`（调研执行者：官方源交叉验证、证据带 URL 与取数时间、禁止臆造）与 `research-merger`（汇总者：保留出处、冲突并列、不引入新事实）。
+- **调研工件 markdown 落盘**：每个 orchestrate run 结束时生成 `dsh-ha-orchestrator.run-<runId>.md`（子任务完整输出不截断 + lastKey + summary），便于直接阅读/归档；已加入 `.gitignore`。
+- **调研拆分引导**：`orch.hintSection` / `orch.toolAutoUse`（中英）追加「多对象调研按对象逐个拆 tasks、子任务要求带来源 URL 证据、合并保留全部出处」。
+
+### Added — 设置页视觉重构（`lib/client.js`）
+- **概览横幅**：页面顶部一眼可读的仪表盘头——HA 启用状态、当前默认模型、备用模型数、编排状态与活动 run 数（复用 `stateGet` + `orchActive` 轻量轮询，无新 RPC）。
+- **Run 历史可视化**：诊断卡「最近运行」从静态表格升级为可展开条目——每条 run 显示模式徽章（图标+文字）、runId、状态（完成/部分失败/已中止）、子任务数、耗时与时间；展开后显示子任务表（状态图标/label/agent/status/lastKey）与结果摘要。
+- **设计系统**：局部设计令牌（间距/圆角/阴影/等宽字体）集中定义并覆盖设置页与对话内卡片；状态徽章升级为软底色 + 色点（颜色+文字双重编码，色盲友好）；表格斑马纹 + hover；统一空状态组件（图示 + 标题 + 引导动作）。
+- **卡片头图标**：内联 SVG 图标集（feather 风格，`currentColor` 随主题变色），五卡片与对话内卡片均有专属图标；卡片头支持键盘展开（Enter/Space）。
+- i18n 新增 27 个 key（中英同步），并修复 `sys.exported` 缺失导致的原始 key 露出。
+
+### Changed — 设置页交互
+- **备用模型行重构**：从 4 列手填文本框升级为结构化行（序号徽章 + 标签 + provider/model 等宽徽章 + 操作按钮组），行内编辑态提供 provider/model 下拉联动（复用 `modelsList`，带请求序号防过期响应），避免手输非法值；空状态突出「推荐备份」主按钮。
+- **编排卡片分组**：基本 / 并发与预算 / 高级三段式，参数补充 hint 说明。
+- **子智能体条目**：首字母头像（按名字 hash 取色相）+ 名称 + 模型徽章 + 描述/提示词分层排版，操作按钮 hover 呈现；空状态引导。
+- 诊断卡数字段等宽化、冷却剩余格式化（`1m30s`）、HA 状态徽章色系化。
+- 调研场景截断上限放大并配置化：`summarizeRuns` body 2000→8000 / total 24000→48000、`renderRunOutput` 3000→8000 / total 30000→60000；新增配置 `orch.mergeBodyLimit / mergeTotalLimit / renderRunLimit / renderTotalLimit`（0=默认，设置页可编辑）。
+- 默认并发上调：`orch.concurrency` 3→6、`orch.maxAgents` 8→16（调研类任务并行度瓶颈）。
+- 设置页子智能体保存改为「展开原条目再覆盖表单字段」，保留表单未纳管字段（如 `tools`），不再编辑一次就静默丢配置。
+- `/orchestrate show` 展示截断放开：run output 500→2000、summary 800→2000。
+
+### Changed — 对话内体验
+- **RunCard 升级**：模式图标 + 标题；进度条精修（品牌渐变 + 条纹动画，尊重 `prefers-reduced-motion`）+ 百分比数字；统计徽章带状态图标（✓/✗/时钟），仅在非零时显示错误/运行中徽章。
+- **HA 状态卡 → 可展开胶囊**（设计参考 P0 #2）：折叠态单行（状态点 + 启用/备份数/隔离数 + 最近切换目标）；点击展开面板——当前默认模型、隔离冷却**倒计时**（本地 1s tick 递减快照 `remainingMs`，不额外发请求）、最近 3 次切换、活动 run 数与模式；键盘可操作。
+
+### Fixed — 发布前收尾（路线图 Phase 6 遗留项，均配回归测试）
+- `agent/error` 停止兜底现在尊重 `cfg.codes` 错误码过滤器：不在用户名单内的错误码不再触发隔离/steer（此前硬编码 MODEL_CODES，过滤失效）。
+- `orchRuns()` RPC 合并磁盘历史（与 `/orchestrate runs` 命令共享 `mergedRunRecords()`）：重启后设置页 Run 历史仍可见。
+- `haSuggestBackups` 只排除默认 provider+model 而非整个 provider，并过滤已隔离/熔断键：同 provider 其他模型进入推荐候选。
+- `orchestrate` 入口新增 `cleanTasks` 防御性清洗（纯函数）：过滤非对象/缺 prompt 的畸形任务——分层防御第三层（平台 schema 第一层、sanitizeConfig 第二层）。
+
+### 工程门禁
+- 测试 193 → **204**（新增 cleanTasks 单测 4 例 + 集成 3 例：cfg.codes 尊重 / orchRuns 磁盘合并 / 畸形 tasks 分层防御；更新 haSuggestBackups 语义测试）。
+- `npm run typecheck / build / check / verify` 全绿（verify 6/6）。
+- README 版本徽章 v0.2.1 → v0.12.0（长期未同步），新增居中 Badge、产品宣传首屏与固定尺寸的设置/运行截图展示；移除旧设置截图，改用 `docs/hero-banner.png`、`docs/settings-gallery.png` 和 `docs/run-states-gallery.png`。
+
+## [0.11.5] - 2026-08-16
+
+### Added
+- 对话内 orchestrate 卡片实时进度：新增 `orchActive` RPC 与运行中 run 视图，卡片轮询展示「进行中 / 已完成 / 异常 / 总数」、进度条与每个子任务状态。
+- 子代理 lastKey 可观测：`orchestrate` 工具输出与 `presentationMeta` 增加可选 `lastKey` 字段，运行中与完成后卡片都能看到每个子代理实际执行的 HA lastKey（provider/model）。
+
+### Fixed
+- 修复 orchestrate 卡片“一直 Deep diving...”/无动态感的问题：运行中不再只依赖 `subCalls` 数量，改为轮询 host 实时 run 视图；即使子代理绿点已全部完成，卡片也会立即反映完成态。
+- **修复配置页报错「typert gateway: haOrchestrator/stateGet: business result failed boundary validation」**：网关对 RPC 结果做 JSON 边界校验，结果树中任何 `undefined` 值都会被拒。根因是 `ctxInject.lastEval` 的 `subagent: isSub || undefined`（v0.11.4 引入）在子智能体路径下把 `subagent: undefined` 键带入快照，导致每次 `stateGet` 被网关拒绝、设置页无法加载。修复：① `lastEval` 三处赋值改为条件展开，`subagent` 键仅在为 true 时存在；② `buildState` 隔离条目 `code` 回退空串；③ run 记录 `resumedFrom` 改为条件键；④ `stateGet`/`haStatus`/`orchRuns`/`diagnostics` 返回统一经 `jsonSafe`（JSON 往返）过一道边界，外部服务数据（如 `agentDefaultModel.currentSelection`）或未来字段遗漏都不会再让设置页报错。新增回归测试断言三个配置页 RPC 结果树无 `undefined` 泄漏。
+
 ## [0.11.4] - 2026-08-16
 
 ### Added

@@ -4,12 +4,15 @@ import assert from 'node:assert/strict'
 import {
   textBlocks,
   resolveAgentDef,
+  resolveSubagentFallbacks,
   findUnknownAgents,
   truncateTasks,
+  cleanTasks,
   resolveConcurrency,
   resolveMode,
   buildRunPrompt,
   buildSubagentRequest,
+  cleanToolFilter,
   normalizeRunResult,
   normalizeFinalRuns,
   poolRun,
@@ -40,6 +43,42 @@ test('resolveAgentDef: 命中返回该对象', () => {
 test('resolveAgentDef: 未命中返回 null', () => {
   assert.equal(resolveAgentDef([{ name: 'alpha' }], 'nope'), null)
   assert.equal(resolveAgentDef([], 'x'), null)
+})
+
+test('resolveSubagentFallbacks：去重主模型、清洗空项且不修改配置', () => {
+  const agent = {
+    name: 'researcher',
+    provider: 'p0',
+    model: 'm0',
+    fallbacks: [
+      { provider: 'p0', model: 'm0' },
+      { provider: ' p1 ', model: ' m1 ' },
+      { provider: '', model: 'm2' },
+      { provider: 'p1', model: 'm1' },
+      null,
+    ],
+  }
+  const snapshot = JSON.stringify(agent)
+  assert.deepEqual(resolveSubagentFallbacks(agent), [{ provider: 'p1', model: 'm1' }])
+  assert.equal(JSON.stringify(agent), snapshot)
+  assert.deepEqual(resolveSubagentFallbacks(null), [])
+})
+test('resolveSubagentFallbacks：保留每个候选自己的 reasoningEffort', () => {
+  const agent = {
+    name: 'thinker',
+    provider: 'p0',
+    model: 'm0',
+    reasoningEffort: 'high',
+    fallbacks: [
+      { provider: 'p0', model: 'm0', reasoningEffort: 'high' },
+      { provider: 'p0', model: 'm0', reasoningEffort: 'low' },
+      { provider: 'p1', model: 'm1', reasoningEffort: ' low ' },
+    ],
+  }
+  assert.deepEqual(resolveSubagentFallbacks(agent), [
+    { provider: 'p0', model: 'm0', reasoningEffort: 'low' },
+    { provider: 'p1', model: 'm1', reasoningEffort: 'low' },
+  ])
 })
 test('resolveAgentDef: 空 name 返回 null', () => {
   assert.equal(resolveAgentDef([{ name: 'alpha' }], ''), null)
@@ -107,6 +146,37 @@ test('truncateTasks: maxAgents 非法回退 8', () => {
 })
 test('truncateTasks: 少于 limit 时保留全部', () => {
   assert.deepEqual(truncateTasks([1, 2], 8), [1, 2])
+})
+
+// ---------------------------------------------------------------------------
+// cleanTasks
+// ---------------------------------------------------------------------------
+test('cleanTasks: 过滤非对象与缺 prompt 条目', () => {
+  const out = cleanTasks([
+    { id: 'a', prompt: '任务 A' },
+    null,
+    'plain string',
+    42,
+    { id: 'b', label: '缺 prompt' },
+    { id: 'c', prompt: '   ' },
+    { id: 'd', prompt: '任务 D', label: 'D', agent: 'x', outputHint: 'hint' },
+  ])
+  assert.equal(out.length, 2)
+  assert.deepEqual(out[0], { id: 'a', prompt: '任务 A' })
+  assert.deepEqual(out[1], { id: 'd', prompt: '任务 D', label: 'D', agent: 'x', outputHint: 'hint' })
+})
+test('cleanTasks: 非数组输入返回空数组', () => {
+  assert.deepEqual(cleanTasks(undefined), [])
+  assert.deepEqual(cleanTasks(null), [])
+  assert.deepEqual(cleanTasks('nope'), [])
+  assert.deepEqual(cleanTasks({ prompt: 'x' }), [])
+})
+test('cleanTasks: 字段类型不匹配时不落入条目', () => {
+  const out = cleanTasks([{ prompt: 'p', id: 7, label: null, agent: 3, outputHint: true, outputSchema: { type: 'object' } }])
+  assert.deepEqual(out, [{ prompt: 'p', outputSchema: { type: 'object' } }])
+})
+test('cleanTasks: 全部畸形时返回空数组（由入口 errNoTasks 兜底）', () => {
+  assert.deepEqual(cleanTasks([null, {}, { prompt: '' }]), [])
 })
 
 // ---------------------------------------------------------------------------
@@ -180,6 +250,12 @@ test('buildSubagentRequest: agentOptions 只写 truthy 字段', () => {
   assert.deepEqual(req.agentOptions, { provider: '7' })
   const none = buildSubagentRequest({ label: 'x', prompt: 'p' }, '', { name: 'N', provider: '', model: null }, 'M', 'P', 'S')
   assert.equal('agentOptions' in none, false)
+})
+test('buildSubagentRequest: 主模型 reasoningEffort 透传，且可单独覆盖默认 provider/model', () => {
+  const req = buildSubagentRequest({ label: 'x', prompt: 'p' }, '', { name: 'N', reasoningEffort: ' high ' }, 'M', 'P', 'S')
+  assert.deepEqual(req.agentOptions, { reasoningEffort: 'high' })
+  const full = buildSubagentRequest({ label: 'x', prompt: 'p' }, '', { name: 'N', provider: 'p1', model: 'm1', reasoningEffort: 'low' }, 'M', 'P', 'S')
+  assert.deepEqual(full.agentOptions, { provider: 'p1', model: 'm1', reasoningEffort: 'low' })
 })
 test('buildSubagentRequest: parent/signal 透传且 prompt 为 text block', () => {
   const parent = { id: 'p' }
@@ -390,4 +466,60 @@ test('findUnknownAgents: reviewers 数组未知名也报出', () => {
   const r2 = findUnknownAgents({ reviewers: ['ghost1', 'reviewer', 'ghost2'] }, null, agents)
   assert.deepEqual(r2.unknown, ['ghost1', 'ghost2'])
   assert.deepEqual(r2.availableNames, ['reviewer'])
+})
+
+// ---------------------------------------------------------------------------
+// cleanToolFilter / buildSubagentRequest toolFilter
+// ---------------------------------------------------------------------------
+test('cleanToolFilter: 清洗、去空白、空名单返回 null', () => {
+  assert.equal(cleanToolFilter(null), null)
+  assert.equal(cleanToolFilter(undefined), null)
+  assert.equal(cleanToolFilter({}), null)
+  assert.equal(cleanToolFilter({ allow: [], deny: [] }), null)
+  assert.deepEqual(cleanToolFilter({ allow: [' a ', '', 'b'], deny: [] }), { allow: ['a', 'b'] })
+  assert.deepEqual(cleanToolFilter({ deny: [' x '] }), { deny: ['x'] })
+  assert.deepEqual(cleanToolFilter({ allow: 'junk' }), null)
+})
+
+test('buildSubagentRequest: agentDef.tools 清洗后透传 toolFilter', () => {
+  const req = buildSubagentRequest(
+    { id: 't1', label: '调研', prompt: 'p' }, '', { name: 'researcher', tools: { allow: [' read ', 'web_fetch', ''] } }, 'merged', {}, null,
+  )
+  assert.deepEqual(req.toolFilter, { allow: ['read', 'web_fetch'] })
+})
+
+test('buildSubagentRequest: 无 tools / 空名单不带 toolFilter 字段', () => {
+  const r1 = buildSubagentRequest({ id: 't', prompt: 'p' }, '', { name: 'n' }, 'm', {}, null)
+  assert.equal('toolFilter' in r1, false)
+  const r2 = buildSubagentRequest({ id: 't', prompt: 'p' }, '', { name: 'n', tools: { allow: [], deny: [] } }, 'm', {}, null)
+  assert.equal('toolFilter' in r2, false)
+})
+
+// ---------------------------------------------------------------------------
+// outputHint / outputSchema / structured 内嵌
+// ---------------------------------------------------------------------------
+test('buildRunPrompt: outputHint 追加到正文（无 extra 与有 extra 两条路径）', () => {
+  const t0 = { prompt: 'p', outputHint: '  以表格输出  ' }
+  assert.equal(buildRunPrompt(t0, null, 'M'), 'p\n\n[输出要求] 以表格输出')
+  assert.equal(buildRunPrompt(t0, 'E', 'M'), 'M\n\nE\n\n---\n\np\n\n[输出要求] 以表格输出')
+  // 无 outputHint 行为不变
+  assert.equal(buildRunPrompt({ prompt: 'p' }, null, 'M'), 'p')
+})
+
+test('buildSubagentRequest: outputSchema 仅 object 根透传', () => {
+  const schema = { type: 'object', properties: { findings: { type: 'array' } } }
+  const r1 = buildSubagentRequest({ id: 't', prompt: 'p', outputSchema: schema }, null, null, 'M', {}, null)
+  assert.deepEqual(r1.outputSchema, schema)
+  const r2 = buildSubagentRequest({ id: 't', prompt: 'p', outputSchema: { type: 'string' } }, null, null, 'M', {}, null)
+  assert.equal('outputSchema' in r2, false)
+  const r3 = buildSubagentRequest({ id: 't', prompt: 'p' }, null, null, 'M', {}, null)
+  assert.equal('outputSchema' in r3, false)
+})
+
+test('normalizeRunResult: structured 以 [structured] 行内嵌 output 开头', () => {
+  const r1 = normalizeRunResult({ id: 't', prompt: 'p' }, null, { stopReason: 'completed', output: [{ type: 'text', text: '正文' }], structured: { a: 1 } })
+  assert.equal(r1.output, '[structured] {"a":1}\n正文')
+  const r2 = normalizeRunResult({ id: 't', prompt: 'p' }, null, { output: [{ type: 'text', text: '正文' }] })
+  assert.equal(r2.output, '正文')
+  assert.equal('structured' in r2, false)
 })

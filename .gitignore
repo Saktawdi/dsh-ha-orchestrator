@@ -28,6 +28,8 @@ dsh-ha-orchestrator.config.json
 dsh-ha-orchestrator.config.backup.json
 dsh-ha-orchestrator.ha.json
 dsh-ha-orchestrator.runs.jsonl
+# 每 run 调研工件 markdown（recordRun 时生成，与 runs.jsonl 同目录）
+dsh-ha-orchestrator.run-*.md
 ha-orchestrator.config.json
 ha-orchestrator.config.backup.json
 ha-orchestrator.ha.json
@@ -46,6 +48,7 @@ coverage/
 .agent/
 .issues/
 .omo/
+.zcode/
 .codegraph/
 .claude/settings.local.json
 

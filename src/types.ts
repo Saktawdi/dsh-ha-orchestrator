@@ -46,6 +46,20 @@ export interface CommandsService {
   }): () => void
 }
 
+/** 子智能体工具裁剪（dsh-subagent ToolRestriction 最小形状：allow 白名单 / deny 黑名单）。 */
+export interface ToolFilterLike {
+  allow?: string[]
+  deny?: string[]
+}
+
+/** provider 能力声明（dsh-subagent SubagentCapabilities 最小形状）。 */
+export interface SubagentCapabilitiesLike {
+  toolFilter?: boolean
+  outputSchema?: boolean
+  depthLimit?: boolean
+  persona?: boolean
+}
+
 /** 子智能体运行请求（提供方 contract）。 */
 export interface SubagentRequest {
   label: string
@@ -53,12 +67,23 @@ export interface SubagentRequest {
   parent?: unknown
   signal?: AbortSignal
   persona?: string
-  agentOptions?: { provider?: string; model?: string }
+  /** 子智能体模型选项；reasoningEffort 是 provider 定义的不透明 effort id。 */
+  agentOptions?: { provider?: string; model?: string; reasoningEffort?: string }
+  /** 按子智能体裁剪工具；provider 不支持（capabilities.toolFilter === false）时必须剥离，否则 start 被拒。 */
+  toolFilter?: ToolFilterLike
+  /** 子智能体结构化输出 JSON Schema（object 根）；provider 不支持时必须剥离。 */
+  outputSchema?: Record<string, unknown>
+  /** 委托深度平台级硬上限；provider 不支持时必须剥离。 */
+  maxDepth?: number
 }
 
 /** 子智能体运行句柄。 */
 export interface SubagentRun {
-  result: Promise<{ stopReason?: string; output?: Array<{ type?: string; text?: string } | null> }>
+  /** 子智能体会话/Agent id（本地运行必有；远程运行由提供方给出）。 */
+  id?: string
+  /** 同进程子智能体 Agent（可选；远程运行不存在）。 */
+  localAgent?: AgentLike | null
+  result: Promise<{ stopReason?: string; output?: Array<{ type?: string; text?: string } | null>; structured?: unknown }>
   dispose(): Promise<unknown>
 }
 
@@ -66,6 +91,8 @@ export interface SubagentRun {
 export interface SubagentProvider {
   list(): string[]
   start(provider: string, request: SubagentRequest): Promise<SubagentRun>
+  /** 按 provider 名取注册项（存在时用于读取 capabilities 做 start 前能力门控）。 */
+  getProvider?(name: string): { capabilities?: SubagentCapabilitiesLike } | null | undefined
 }
 
 /** systemPrompt 段落求值上下文（最小形状；真实 dsh-system-prompt 还带 agent/scope）。 */
@@ -117,6 +144,11 @@ export interface LaunchEnvironmentService {
 /** typert registry 服务（仅用到 host 侧 invocation 注册）。 */
 export interface TypertRegistryService {
   register(contribution: unknown): unknown
+}
+
+/** tools 服务最小形状（dsh-tools ToolRuntime：schemas() 枚举可见工具名，供设置页提示）。 */
+export interface ToolsServiceLike {
+  schemas?(scope?: unknown): Array<{ name?: string } | null | undefined>
 }
 
 /**

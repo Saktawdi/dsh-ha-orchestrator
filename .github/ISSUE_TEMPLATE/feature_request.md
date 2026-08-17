@@ -17,9 +17,11 @@ assignees:
 ## 与路线图哪一阶段相关
 
 - [ ] **Phase 1 ｜ HA**（模型高可用：熔断 / 冷却 / 探测恢复 / 错误分类 / 续跑）
-- [ ] **Phase 2 ｜ 编排**（fanout / pipeline / supervisor / map-reduce / router / run 持久化 / resume / 预设）
+- [ ] **Phase 2 ｜ 编排**（fanout / pipeline / supervisor / map-reduce / router / run 持久化 / resume / 预设 / 预算 / 结构化输出）
 - [ ] **Phase 3 ｜ UI**（设置页 / Run 面板 / 可访问性 / 错误体验）
 - [ ] **Phase 4 ｜ 发布**（npm / 兼容矩阵 / 文档 / 社区 / Skill）
+- [ ] **Phase 5 ｜ 质量加固**（安全边界 / 兼容降级 / 回归测试 / 持久化一致性）
+- [ ] **Phase 6 ｜ 发布前收尾**（调研能力 / 工具裁剪 / provider 能力门控 / UI 细节）
 
 > 阶段划分说明见仓库内 `docs/` 目录文档（架构 / 配置 / 安全 / 验证 / 兼容矩阵）。
 

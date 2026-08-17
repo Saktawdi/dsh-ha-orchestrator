@@ -12,8 +12,17 @@ export interface AgentEntry {
     name: string;
     provider: string;
     model: string;
+    /** 模型推理强度；留空 = 使用 provider/model 默认值。 */
+    reasoningEffort?: string;
     description: string;
     systemPrompt: string;
+    /** 工具裁剪（可选）：allow 白名单 / deny 黑名单，工具名以宿主全局注册为准；provider 不支持时自动剥离。 */
+    tools?: {
+        allow?: string[];
+        deny?: string[];
+    };
+    /** 该子智能体独立的模型回退链；为空/未配置时不启用编排层回退。 */
+    fallbacks?: BackupEntry[];
 }
 /** HA（模型高可用）配置节。 */
 export interface HaConfig {
@@ -60,6 +69,16 @@ export interface OrchConfig {
     globalConcurrency: number;
     /** 已保存的编排配方。 */
     presets: OrchPreset[];
+    /** merge/supervisor/reduce 输入的每任务正文字符上限（0 = 用代码默认值）。 */
+    mergeBodyLimit: number;
+    /** merge/supervisor/reduce 输入的总字符上限（0 = 用代码默认值）。 */
+    mergeTotalLimit: number;
+    /** 工具结果渲染的每任务输出字符上限（0 = 用代码默认值）。 */
+    renderRunLimit: number;
+    /** 工具结果渲染的总字符上限（0 = 用代码默认值）。 */
+    renderTotalLimit: number;
+    /** 子智能体委托深度平台级硬上限（0 = 关闭；1 = 子智能体不能再委托）。 */
+    maxDepth: number;
 }
 /** 调试配置节。 */
 export interface DebugConfig {

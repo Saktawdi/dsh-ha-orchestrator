@@ -20,6 +20,7 @@
 | 持久化配置 | `dsh-ha-orchestrator.config.json`（+ `dsh-ha-orchestrator.config.backup.json` 备份） | 本地文件，可被篡改 | 启动加载，亦可被 `stateImport`/`stateReload` 触发重读 |
 | HA 运行态 | `dsh-ha-orchestrator.ha.json` | 本地文件，可被篡改 | 隔离/失败计数/游标/历史，启动时 `deserializeHaState` 解析并回灌内存 |
 | Run 记录 | `dsh-ha-orchestrator.runs.jsonl` | 本地文件，可被篡改 | 每条 orchestrate 调用一行 JSON，`readRunsFromDisk` 逐行解析 |
+| Run 工件 | `dsh-ha-orchestrator.run-<runId>.md` | 本地文件，可被篡改 | 每次编排写入完整子任务输出、`lastKey` 和 summary；当前不自动修剪 |
 | RPC 入参 | 配置页 Web UI（`ctx.remote.haOrchestrator.*`） | 宿主内，跨组件 | `stateSet`/`stateImport`/`orchSavePreset`/`agentsGenerate`/`haProbeNow` 均为未经类型约束的外部输入 |
 | 工具入参 | `orchestrate` / `list-subagents` 由模型调用 | 低可信（模型可能被诱导） | `args.tasks`、`args.agent`、`args.supervisorAgent` 等直接来自工具调用负载 |
 
@@ -65,13 +66,16 @@
   - `ha.cooldownMs` 下限 `MIN_COOLDOWN_MS`（1000ms）；
   - `ha.threshold` 下限 1、`burstWindowMs`/`providerThreshold` 下限 0；
   - `orch.concurrency` 钳制到 `[1, 32]`、`maxAgents` 到 `[1, 64]`、
-    `stageRetry` 到 `[0, 5]`、`globalConcurrency` 到 `[0, 64]`；
+    `stageRetry` 到 `[0, 5]`、`globalConcurrency` 到 `[0, 64]`；合并/渲染长度分别钳制到
+    `[0, 100000]` / `[0, 400000]`，`maxDepth` 钳制到 `[0, 8]`；
   - `lang.mode` 仅接受 `'zh' | 'en'`，其余恒为 `'auto'`。
-- **数组逐字段规整**：
+  - **数组逐字段规整**：
   - `ha.backups` 仅保留 `provider` 与 `model` 均非空的条目，`reasoningEffort` 可选；
-  - `orch.agents` 仅保留 `name` 非空的条目，其余字段全部字符串化；
+  - `orch.agents` 仅保留 `name` 非空的条目，其余字段全部字符串化；主模型 `reasoningEffort` 为空时不落盘；
   - `orch.presets` 仅保留 `name` 非空的对象，任务仅保留 `prompt` 非空条目；
   - `ha.codes` 逐项 `String()` 并过滤空串。
+  - `orch.agents[].tools` 只保留非空的 `allow` / `deny` 字符串数组；`orch.maxDepth`、合并/渲染长度
+    均有明确上下限。
 - `sanitizeConfig` 返回全新对象，**不修改传入的 patch 与 base**。
 
 ### 2.3 RPC 参数校验（`src/index.ts`，`HaOrchestratorRpc`）
@@ -116,19 +120,23 @@
 - `label`、`prompt`（text block）、`parent`、`signal`；
 - 仅当 `agentDef.systemPrompt` 存在时带 `persona`；
 - 仅当 `agentDef.provider/model` 存在时带 `agentOptions`。
+- 仅当配置/任务经过清洗后存在时带 `toolFilter`、object 根 `outputSchema`、`maxDepth`；provider
+  声明不支持对应能力时，`runOne` 在 `start` 前剥离字段。
 
 任何来自工具入参、本地配置的其它字段**不会透传**进子智能体请求对象，避免字段走私/注入面。
 
 ### 2.8 编排未知子智能体名报错
 
-`findUnknownAgents` 收集 `args.agent` / `args.supervisorAgent` / 各 `task.agent` 中被引用但
+`findUnknownAgents` 收集 `args.agent` / `args.supervisorAgent` / `args.reviewers` / 各 `task.agent` 中被引用但
 `orch.agents` 里不存在的名称；存在未知名时 `orchestrate` 直接抛错（`orch.errUnknownAgent`），
 **拒绝执行**可能指向未定义子智能体的编排，而不是静默回退到默认模型。
 
 ### 2.9 并发与成本护栏
 
-- `orchestrate` 工具参数 `tasks` 数组在 schema 上仅允许各字段为字符串（`additionalProperties: false`）；
-- `maxAgents`（默认 8）被用于 `truncateTasks` 截断任务数量，`concurrency` 钳制到 `[1, maxAgents]`；
+- `orchestrate` 工具参数的 `tasks` 数组只允许声明过的字段（`additionalProperties: false`）；
+  `id`/`label`/`agent`/`prompt`/`outputHint` 为字符串，`outputSchema` 作为 JSON 值传入并在构造
+  request 时仅接受 object 根 Schema；
+- `maxAgents`（默认 16）被用于 `truncateTasks` 截断任务数量，`concurrency` 钳制到 `[1, maxAgents]`；
 - `orch.globalConcurrency`（跨 run 共享信号量 `acquireOrchSlot`）限制同时进行的编排数，防止
   多个 agent 同时把子智能体提供方打爆；上限 64。
 
@@ -136,24 +144,26 @@
 
 ## 3. 数据持久化位置与泄露面
 
-插件持久化三类文件，均落在**会话 workspace 或沙箱 workspace-write 可写根**：
+插件持久化四类文件，均落在**会话 workspace 或沙箱 workspace-write 可写根**：
 
 | 文件 | 内容 | 敏感度 |
 | --- | --- | --- |
 | `dsh-ha-orchestrator.config.json`（+ `.backup.json`） | 完整配置，含 backups/model 选型、自定义子智能体 `systemPrompt`、上下文注入 `ctx.text` | **中—高**：可能含用户编写的自定义系统提示词与编排配方文本 |
 | `dsh-ha-orchestrator.ha.json` | 隔离键、失败计数、游标、历史 | 低—中：含 provider/model 名与错误码 |
 | `dsh-ha-orchestrator.runs.jsonl` | 每次 orchestrate 的完整 run：tasks 的 `prompt`、各 run 的 `output`、`summary` | **高**：含发送给子智能体的原始任务与输出全文 |
+| `dsh-ha-orchestrator.run-<runId>.md` | 单次 run 的完整任务/输出/summary | **高**：与 JSONL 相同，且当前不自动修剪 |
 
 ### 泄露面说明
 
 - 写入目标目录顺序：① 会话 workspace / DSH 数据目录（`agents` 会话 header 的 `cwd`，未取到则回退
   `launchEnvironment` 的 `DSH_HOME`）→ ② 沙箱 `workspace-write` 可写根（`sandboxPolicy.workspaceRoot`）。
-  写入与读取用**同一目录顺序**，保证重启后能找到。
+  写入与读取用**同一目录顺序**，保证重启后能找到；配置/HA 状态没有候选目录时会报告写入失败，
+  run JSONL/Markdown 还会尝试 fs 默认 cwd。
 - **非任意路径写**：所有写入均经 `fs` 服务的 `resolve(name, { cwd })` + `writeText(target)`，
   插件不以拼接绝对路径的方式写任意位置；文件名为固定常量。
 - **run 记录含子智能体输出全文**：`orchestrate` 的 `runs[].output` 是各子智能体的完整文本输出，
   `tasks[].prompt` 是调用者给的任务原文，二者都落盘到 JSONL。**任何想从任务内容/输出中隐藏的信息都会持久化**。
-- HA 状态仅在**非全空**时才写盘（`persistHaState` 首行：全空不产生噪音文件），空状态不残留文件。
+- HA 状态通过 500ms 防抖写盘；执行 reset 后可能留下一个表示空状态的文件，不应把该文件视为敏感内容。
 
 ---
 
@@ -192,7 +202,8 @@
 
 ### 5.2 已知边界（当前实现未覆盖）
 
-- **run 记录明文落盘**：`runs.jsonl` 以 UTF-8 明文保存任务 prompt 与子智能体输出全文，无加密。
+- **run 记录和工件明文落盘**：`runs.jsonl` 与 `run-<runId>.md` 以 UTF-8 明文保存任务 prompt 与
+  子智能体输出全文，无加密；Markdown 工件当前没有数量修剪。
   若部署环境的会话 workspace 可被不可信进程读取，属信息泄露面。
 - **上下文注入文本来自配置**：`ctx.text` 经 `sanitizeConfig` 字符串化后按原文注入系统提示词；
   若该配置被篡改，注入内容可影响模型行为（属提示注入面，但需本地文件写权限才可篡改）。
@@ -206,10 +217,11 @@
 
 ### 5.3 部署建议
 
-1. 保持会话 workspace 与 DSH 数据目录**仅对可信进程可读写**，尤其因为 `runs.jsonl` 明文存全量 run 内容。
+1. 保持会话 workspace 与 DSH 数据目录**仅对可信进程可读写**，尤其因为 `runs.jsonl` 和 Markdown 工件明文存全量 run 内容。
 2. 若担心提示注入，可关闭上下文注入（`ctx.enabled = false`），模型将不获得插件引导文本。
-3. 若无需在配置期间记录编排输出，可审慎清理 `dsh-ha-orchestrator.runs.jsonl`；内存/磁盘均有容量上限
-   （`RUN_MEM_CAP=50`、`RUN_FILE_CAP=200`），超出后自动裁掉最旧记录。
+3. 若无需在配置期间记录编排输出，可审慎清理 `dsh-ha-orchestrator.runs.jsonl` 与
+  `dsh-ha-orchestrator.run-<runId>.md`；JSONL 有内存/磁盘容量上限（`RUN_MEM_CAP=50`、
+  `RUN_FILE_CAP=200`），Markdown 工件则需手动清理。
 4. 升级宿主或锁定新 peerDependencies 版本后，重新跑 `npm run verify` 与回归测试，确认工具注册、
    LLM 拦截、子智能体契约仍兼容。
 

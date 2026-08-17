@@ -91,7 +91,7 @@ function makeFs() {
 // ---------- 可注入假服务的环境 ----------
 function makeEnv() {
   const fs = makeFs()
-  const state = { locale: 'zh', probeMode: 'ok' }
+  const state = { locale: 'zh', probeMode: 'ok', subagentResultFailures: new Map() }
   const subagentOutputs = new Map() // label -> 输出文本
   const subagentFailures = new Map() // label -> 剩余失败次数（>0 时 start 抛错）
   const ctx = new FakeCtx()
@@ -120,12 +120,15 @@ function makeEnv() {
         const text = subagentOutputs.has(label)
           ? subagentOutputs.get(label)
           : 'OUT:' + label
+        const resultFailureCount = state.subagentResultFailures.get(label) || 0
+        if (resultFailureCount > 0) state.subagentResultFailures.set(label, resultFailureCount - 1)
         return {
           result: Promise.resolve({
-            stopReason: 'completed',
-            output: [{ type: 'text', text }],
+            stopReason: resultFailureCount > 0 ? 'error' : 'completed',
+            output: resultFailureCount > 0 ? [{ type: 'text', text: 'subagent model failure: ' + label }] : [{ type: 'text', text }],
           }),
-          async dispose() {},
+          // disposeError 开关：模拟子智能体 dispose 抛错（健壮性回归用）
+          async dispose() { if (state.disposeError) throw new Error('dispose boom') },
         }
       } finally {
         ctx.activeSubagents -= 1
@@ -251,7 +254,7 @@ test('装配：工具/上下文注入/事件/RPC 服务全部注册', async () =
   const snap = await rpc.stateGet()
   assert.equal(snap.config.ha.enabled, true)
   assert.deepEqual(snap.config.ha.backups, [])
-  assert.equal(snap.config.orch.maxAgents, 8)
+  assert.equal(snap.config.orch.maxAgents, 16)
   assert.equal(snap.i18n.active, 'zh')
   assert.ok(snap.i18n.keys > 0)
 })
@@ -284,6 +287,61 @@ test('上下文注入求值：自定义文本 / 默认引导 / 子智能体默�
   await rpc.stateSet({ patch: { ctx: { enabled: false } } })
   assert.equal(section.text(), '')
   assert.equal(section.text({ agent: subagentAgent }), '')
+})
+
+// ---------- RPC 结果 JSON 安全性（网关边界校验回归） ----------
+// 网关对业务结果做 JSON 边界校验：结果树中任何 undefined / NaN / 循环引用 /
+// 非纯对象 / getter 都会被拒（"business result failed boundary validation"），
+// 设置页 stateGet/haStatus/orchRuns 直接依赖该约束。此断言模拟网关的
+// assertJsonValue 语义，防止字段以 undefined 值泄漏导致配置页报错。
+function assertJsonSafe(value, path = '$') {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return
+  if (typeof value === 'number') {
+    assert.ok(Number.isFinite(value), path + ' 含非有限数字')
+    return
+  }
+  assert.ok(typeof value === 'object', path + ' 类型非法: ' + typeof value)
+  assert.ok(!Array.isArray(value) || Object.keys(value).length === value.length, path + ' 稀疏数组')
+  for (const key of Object.keys(value)) {
+    const v = value[key]
+    assert.notEqual(v, undefined, path + '.' + key + ' 为 undefined（网关边界校验会拒绝）')
+    assertJsonSafe(v, path + '.' + key)
+  }
+}
+
+test('回归：stateGet/haStatus/orchRuns 结果始终通过 JSON 边界校验（无 undefined 泄漏）', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  const section = ctx.sections[0]
+  const subagentAgent = { id: 'child', session: { header: { origin: 'subagent', delegationDepth: 1 } } }
+
+  // 1) 触发 lastEval 的三种取值：主智能体默认引导 / 子智能体空 / 自定义文本
+  //    （v0.11.4 回归点：subagent: isSub || undefined 会向 lastEval 注入 undefined 值）
+  section.text()
+  section.text({ agent: subagentAgent })
+  await rpc.stateSet({ patch: { ctx: { text: 'CUSTOM-REGRESSION' } } })
+  section.text()
+  section.text({ agent: subagentAgent })
+  await rpc.stateSet({ patch: { ctx: { text: '' } } })
+
+  // 2) 触发 HA 隔离与切换历史（quarantine/history 进入快照）
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  const seed = { provider: 'p0', model: 'm0' }
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(seed))
+  await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'RATE_LIMIT' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
+
+  // 3) 三个配置页 RPC 的结果树必须全部 JSON 安全
+  const snap = await rpc.stateGet()
+  assertJsonSafe(snap)
+  assert.equal(snap.quarantine.length, 1)
+  assertJsonSafe(await rpc.haStatus())
+  assertJsonSafe(await rpc.orchRuns())
+
+  // 4) ctxInject.lastEval 的 subagent 键仅在为 true 时存在（不再出现 undefined）
+  const lastEval = snap.ctxInject.lastEval
+  assert.ok(lastEval && typeof lastEval.mode === 'string')
+  assert.ok(Object.prototype.hasOwnProperty.call(lastEval, 'subagent') === false || lastEval.subagent === true)
 })
 
 test('HA 事件流：直通 -> 失败隔离 -> 请求切换备用', async () => {
@@ -359,6 +417,27 @@ test('HA 停止兜底：agent/error 隔离失败模型并延迟 steer', async ()
   assert.equal(ctx.steers[0].source.plugin, 'dsh-ha-orchestrator')
 })
 
+test('回归：agent/error 停止兜底尊重 cfg.codes（收窄过滤后不隔离/不 steer）', async () => {
+  const { ctx, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  // 用户收窄错误码过滤：只对 RATE_LIMIT 反应；SERVER 不在名单
+  await rpc.stateSet({ patch: { ha: { codes: ['RATE_LIMIT'], backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+
+  await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
+  await ctx.emit('agent/error', { agent: fakeAgent, turn: 1, step: 0, error: { failure: { code: 'SERVER' } } })
+
+  const snap = await rpc.stateGet()
+  assert.equal(snap.quarantine.length, 0, 'SERVER 不在 cfg.codes 名单，不隔离')
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.equal(ctx.steers.length, 0, '不触发 steer')
+
+  // 名单内的 RATE_LIMIT 仍然正常触发
+  await ctx.emit('agent/error', { agent: fakeAgent, turn: 2, step: 0, error: { failure: { code: 'RATE_LIMIT' } } })
+  const snap2 = await rpc.stateGet()
+  assert.ok(snap2.quarantine.some((q) => q.provider === 'p0' && q.model === 'm0'), 'RATE_LIMIT 在名单内，正常隔离')
+})
+
 test('orchestrate fanout：并行执行并保序返回 runs', async () => {
   const { ctx } = makeEnv()
   await mountPlugin(ctx)
@@ -378,6 +457,95 @@ test('orchestrate fanout：并行执行并保序返回 runs', async () => {
   assert.equal(ctx.subagentCalls[0].provider, 'provider-a')
   assert.equal(ctx.subagentCalls[0].request.label, 't1')
   assert.ok(ctx.subagentCalls[0].request.signal instanceof AbortSignal)
+})
+
+test('orchestrate 子智能体：按 AgentEntry.fallbacks 独立回退 start 失败，并复用到所有编排分支', async () => {
+  const { ctx, subagentFailures } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: {
+    // 主模型 HA 的备用链故意使用不同目标，验证子智能体只消费自己的 fallbacks。
+    ha: { backups: [{ label: 'global', provider: 'p-global', model: 'm-global' }] },
+    orch: {
+      agents: [{
+        name: 'custom', provider: 'p-primary', model: 'm-primary', description: '', systemPrompt: '',
+        reasoningEffort: 'high',
+        fallbacks: [{ label: 'role-backup', provider: 'p-role', model: 'm-role', reasoningEffort: 'low' }],
+      }],
+    },
+  } })
+  subagentFailures.set('custom', 1)
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 'fb-start', agent: 'custom', prompt: 'use the role fallback' }],
+  }, { id: 'a1' })
+
+  assert.equal(res.runs[0].status, 'completed')
+  assert.equal(ctx.subagentCalls.length, 2)
+  assert.deepEqual(ctx.subagentCalls[0].request.agentOptions, { provider: 'p-primary', model: 'm-primary', reasoningEffort: 'high' })
+  assert.deepEqual(ctx.subagentCalls[1].request.agentOptions, { provider: 'p-role', model: 'm-role', reasoningEffort: 'low' })
+})
+
+test('orchestrate 子智能体：provider 返回 stopReason=error 时也走独立回退', async () => {
+  const { ctx, state } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { orch: { agents: [{
+    name: 'custom', provider: 'p-primary', model: 'm-primary', reasoningEffort: 'high', description: '', systemPrompt: '',
+    fallbacks: [{ provider: 'p-role', model: 'm-role' }],
+  }] } } })
+  state.subagentResultFailures.set('custom', 1)
+
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 'fb-result', agent: 'custom', prompt: 'use the role fallback after result error' }],
+  }, { id: 'a1' })
+
+  assert.equal(res.runs[0].status, 'completed')
+  assert.equal(ctx.subagentCalls.length, 2)
+  assert.deepEqual(ctx.subagentCalls[1].request.agentOptions, { provider: 'p-role', model: 'm-role' })
+})
+
+test('orchestrate 子智能体：角色回退候选计入 budgetAgents', async () => {
+  const { ctx, subagentFailures } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { orch: { agents: [{
+    name: 'custom', provider: 'p-primary', model: 'm-primary', description: '', systemPrompt: '',
+    fallbacks: [{ provider: 'p-role', model: 'm-role' }],
+  }] } } })
+  subagentFailures.set('custom', 1)
+
+  await assert.rejects(
+    toolExec(ctx, 'orchestrate', {
+      mode: 'fanout',
+      budgetAgents: 1,
+      tasks: [{ id: 'budget-fallback', agent: 'custom', prompt: 'fallback must consume budget' }],
+    }, { id: 'a1' }),
+    /子智能体调用预算.*(耗尽|用尽)|subagent invocation budget exhausted/i,
+  )
+  assert.equal(ctx.subagentCalls.length, 1, '预算为 1 时不应启动角色回退候选')
+})
+
+test('回归：orchestrate 畸形 tasks 分层防御（工具层 schema 拒绝 + 入口 cleanTasks 纵深）', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+
+  // 第一层：平台工具 schema 直接拒绝非对象/缺 prompt 的 args.tasks（INVALID_ARGS）
+  await assert.rejects(
+    () => toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'ok1', prompt: 'P1' }, null, 'str', { id: 'x' }] }, { id: 'a1' }),
+    (e) => String(e.code) === 'INVALID_ARGS',
+  )
+  assert.equal(ctx.subagentCalls.length, 0, '未进入执行层')
+
+  // 第二层：preset 任务不经 call-time schema，由 sanitizeConfig 清洗（config 层）；
+  // 入口 cleanTasks 为第三层纵深（单测覆盖），此处验证合法 preset 仍正常执行
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.orchSavePreset({ name: 'p-ok', mode: 'fanout', tasks: [{ id: 's1', prompt: 'P1' }] })
+  const res = await toolExec(ctx, 'orchestrate', { preset: 'p-ok' }, { id: 'a1' })
+  assert.equal(res.runs.length, 1)
+  assert.equal(res.runs[0].status, 'completed')
 })
 
 test('orchestrate pipeline：前段输出作为后段 carry', async () => {
@@ -448,7 +616,9 @@ test('list-subagents：返回配置中的自定义子智能体清单', async () 
   const { ctx } = makeEnv()
   await mountPlugin(ctx)
   const res = await toolExec(ctx, 'list-subagents', {})
-  assert.equal(res.agents.length, 1)
+  // 默认清单以 defaultConfig 为准（会随版本扩充），不硬编码数量
+  const { defaultConfig } = await import('../../lib/config.js')
+  assert.equal(res.agents.length, defaultConfig.orch.agents.length)
   assert.equal(res.agents[0].name, 'reviewer')
   assert.equal(typeof res.agents[0].description, 'string')
 })
@@ -781,15 +951,16 @@ test('Phase1 HA 运行态持久化：重启恢复隔离/游标/历史', async ()
   assert.ok(statusB.cursors.some((c) => c.agent === 'a1' && c.lastKey === 'p1\u0000m1'), '游标恢复')
 })
 
-test('Phase1 haSuggestBackups：排除当前默认模型，给出候选', async () => {
+test('Phase1 haSuggestBackups：只排除默认模型（同 provider 其他模型保留），给出候选', async () => {
   const { ctx } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
   const cands = await rpc.haSuggestBackups()
-  // 默认选择 p0/m0 -> 排除整个 p0，候选为 p1/m0、p1/m1
-  assert.ok(cands.length >= 2, '有候选: ' + JSON.stringify(cands))
-  assert.ok(cands.every((c) => c.provider === 'p1'), '排除默认 provider')
-  assert.ok(cands.some((c) => c.model === 'm1'))
+  // 默认选择 p0/m0 -> 只排除 p0/m0；p0/m1 与 p1/m0、p1/m1 都是候选
+  assert.ok(cands.length >= 3, '有候选: ' + JSON.stringify(cands))
+  assert.ok(!cands.some((c) => c.provider === 'p0' && c.model === 'm0'), '排除默认模型本身')
+  assert.ok(cands.some((c) => c.provider === 'p0' && c.model === 'm1'), '同 provider 其他模型保留')
+  assert.ok(cands.some((c) => c.provider === 'p1' && c.model === 'm0'), '其他 provider 模型保留')
 })
 
 test('Phase1 haStatus：隔离层级 / 失败计数 / 游标 / 探测记录齐备', async () => {
@@ -848,6 +1019,26 @@ test('Phase2 run 记录：orchestrate 生成 runId 并落盘（JSONL）', async 
   const parsed = JSON.parse(lines[0])
   assert.equal(parsed.runId, rec.runId)
   assert.equal(parsed.runs.length, 2)
+})
+
+test('回归：orchRuns() RPC 合并磁盘历史（重启后新实例仍可见）', async () => {
+  const envA = makeEnv()
+  await mountPlugin(envA.ctx)
+  const res = await toolExec(envA.ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'P1' }],
+  }, { id: 'a1' })
+  // 等 run 落盘
+  await new Promise((resolve) => setTimeout(resolve, 250))
+
+  // 新实例（内存为空）共享同一磁盘：RPC 应能看到历史 run
+  const envB = envWithSharedFs(envA.fs)
+  await mountPlugin(envB.ctx)
+  const rpc = envB.ctx.get('haOrchestrator')
+  const { runs } = await rpc.orchRuns()
+  assert.ok(runs.length >= 1, '合并磁盘历史: ' + JSON.stringify(runs.map((r) => r.runId)))
+  assert.ok(runs.some((r) => r.runId === res.runId), '包含落盘的 runId')
+  assert.ok(runs.every((r) => r.mode && r.startedAt !== undefined), '记录字段齐备')
 })
 
 test('Phase2 实时进度事件：run-start / task-status / run-end', async () => {
@@ -1061,6 +1252,68 @@ test('Phase2 配方：保存/列出/执行/删除', async () => {
 
   // 未知配方报错
   await assert.rejects(toolExec(ctx, 'orchestrate', { preset: 'nope', tasks: [{ id: 'x', prompt: 'p' }] }, { id: 'a1' }), /nope/)
+})
+
+// ---------- 健壮性回归（对应 docs/local/robustness-review-2026-08-16.md） ----------
+
+test('回归：orchDeletePreset 空 name 拒绝执行，不清空任何配方', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.orchSavePreset({ name: 'audit', mode: 'fanout', tasks: [{ id: 'x', prompt: 'p' }] })
+  await rpc.orchSavePreset({ name: 'other', mode: 'fanout', tasks: [{ id: 'y', prompt: 'q' }] })
+
+  // 空 name（undefined/空串）都必须抛错，而不是 filter 掉全部
+  await assert.rejects(rpc.orchDeletePreset({}), /配方名称不能为空/)
+  await assert.rejects(rpc.orchDeletePreset({ name: '' }), /配方名称不能为空/)
+  const list = await rpc.orchListPresets()
+  assert.equal(list.presets.length, 2, '空 name 不得清空任何配方')
+})
+
+test('回归：runs.jsonl 半损坏行（runs/tasks 非数组）不拖垮 /orchestrate 命令', async () => {
+  const { ctx, fs } = makeEnv()
+  await mountPlugin(ctx)
+  // 直接注入半损坏记录：runs 为数字、tasks 缺失（旧行/runId 存在即被读取）
+  fs.store.set('C:/work/dsh-ha-orchestrator.runs.jsonl',
+    JSON.stringify({ runId: 'bad1', runs: 3 }) + '\n' +
+    JSON.stringify({ runId: 'bad2', startedAt: '2026-01-01T00:00:00.000Z' }) + '\n')
+  const def = ctx.commandDefs.find((d) => d.name === 'orchestrate')
+  const res = await def.handler({ input: 'runs' })
+  assert.equal(res.kind, 'success', 'runs 列表命令不被损坏行拖垮')
+  const show = await def.handler({ input: 'show bad1' })
+  assert.equal(show.kind, 'success', 'show 详情命令不被非数组 runs 拖垮')
+})
+
+test('回归：子智能体 dispose 抛错不吞任务结果', async () => {
+  const { ctx, state } = makeEnv()
+  state.disposeError = true
+  await mountPlugin(ctx)
+  const res = await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'd1', prompt: 'a' }] }, { id: 'a1' })
+  assert.equal(res.runs[0].status, 'completed', 'dispose 失败不得把完成任务改成 error')
+  assert.ok(res.runs[0].output.indexOf('OUT:d1') >= 0, '任务输出原样保留')
+})
+
+test('回归：等待全局并发槽期间取消的编排不再启动子智能体且槽位正确释放', async () => {
+  const { ctx, state } = makeEnv()
+  state.subagentDelay = 80
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+  await rpc.stateSet({ patch: { orch: { globalConcurrency: 1 } } })
+  const tool = findTool(ctx, 'orchestrate')
+
+  // run1 占用唯一全局槽；run2 等待期间被取消
+  const p1 = tool.execute({ mode: 'fanout', tasks: [{ id: 'h1', prompt: 'a' }] }, { agent: { id: 'a1' }, signal: new AbortController().signal })
+  const ac = new AbortController()
+  const p2 = tool.execute({ mode: 'fanout', tasks: [{ id: 'h2', prompt: 'b' }] }, { agent: { id: 'a1' }, signal: ac.signal })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  ac.abort()
+  await assert.rejects(p2, /编排调用已被取消/)
+  await p1
+  assert.equal(ctx.subagentCalls.length, 1, '被取消的 run 不启动子智能体')
+
+  // 槽位已随失败路径正确释放：后续 run 可正常获得槽
+  await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 'h3', prompt: 'c' }] }, { id: 'a1' })
+  assert.equal(ctx.subagentCalls.length, 2)
 })
 
 test('Phase2 resume：中断的 pipeline 按 runId 恢复未完成阶段', async () => {

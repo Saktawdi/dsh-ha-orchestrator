@@ -26,21 +26,21 @@ node --test "tests/*.test.js" "tests/integration/*.test.js"
 测试运行在前一步 **`npm run build` 生成的 `lib/` 构建产物**上（各测试文件从
 `../lib/*.js` 导入），而非直接跑 `src/` 的 TypeScript 源码。
 
-### 单元测试（120 例）
+### 单元测试（136 例）
 
 | 文件 | 例数 | 覆盖对象（`lib/` 构建产物） | 主要覆盖点 |
 | :-- | :-: | :-- | :-- |
-| `tests/config.test.js` | 20 | `lib/config.js` | `MIN_COOLDOWN_MS` 常量、`defaultConfig` 深层结构、`sanitizeConfig` 逐条校验规则、未提交节沿用 base、入参不被修改 |
+| `tests/config.test.js` | 22 | `lib/config.js` | `MIN_COOLDOWN_MS` 常量、`defaultConfig` 深层结构、`sanitizeConfig` 逐条校验规则、工具裁剪/深度限制、未提交节沿用 base、入参不被修改 |
 | `tests/ha-core.test.js` | 25 | `lib/ha-core.js` | `keyOf`/`splitKey` 往返、`matchesCodes`、`clearExpired` 过期清理、`isExactQuarantined`/`isBlocked` 隔离判定、`bumpFailure` 失败计数、`quarantineKey` 隔离写入、`findFallback`/`pickFallback` 备用游标与跳过、`maxRetriesFor` 重试预算、`computeFailingKey`、`burstWindowMs` 窗口、provider 级通配隔离、`serialize/deserializeHaState` 往返 |
-| `tests/orch-runner.test.js` | 41 | `lib/orch-runner.js` | `textBlocks`、`resolveAgentDef`、`findUnknownAgents`、`truncateTasks`、`resolveConcurrency`、`resolveMode`、`buildRunPrompt`/`buildSubagentRequest`、`normalizeRunResult`/`normalizeFinalRuns`、`poolRun` 并发与异常、`summarizeRuns`/`renderRunOutput` 截断、`appendPipelineCarry`、`buildSupervisorPrompt` |
+| `tests/orch-runner.test.js` | 55 | `lib/orch-runner.js` | agent 查找与未知名、任务清洗/截断、并发与模式解析、prompt/request 构建、工具裁剪、结构化输出、结果归一化、`poolRun` 并发与异常、汇总/渲染截断、pipeline carry、supervisor prompt |
 | `tests/language.test.js` | 24 | `lib/language.js` | `parseDictModule` 合法/非法/数组/BOM/空对象、`resolveTarget`、`pickDict` 回滚、`translate` 占位符、`makeT` 绑定字典 |
 | `tests/remote.test.js` | 10 | `lib/remote.js` | `decorateRemoteMethod` 的 context/export/access 传递、`Symbol.metadata` 存在性、`runInitializers` 延迟执行语义、描述符保持、完成后 `addInitializer` 抛错、多方法 exportName 与 initializer 顺序 |
 
-**单元测试合计 = 20 + 25 + 41 + 24 + 10 = 120 例。**
+**单元测试合计 = 22 + 25 + 55 + 24 + 10 = 136 例。**
 
-### 集成测试（40 例）
+### 集成测试（68 例）
 
-文件 `tests/integration/host.test.js`（40 例），以最小假 `ctx`（cordis 事件语义子集）
+文件 `tests/integration/host.test.js`（68 例），以最小假 `ctx`（cordis 事件语义子集）
 驱动真实插件 **`lib/index.js`** 构建产物。头部注释声明的覆盖范围（对应路线图
 Phase 0「HA 持久化恢复与事件流集成测试 / 编排 execute 集成」）包括：
 
@@ -48,20 +48,22 @@ Phase 0「HA 持久化恢复与事件流集成测试 / 编排 execute 集成」�
 2. **上下文注入求值** — 自定义文本 / 默认引导 / 关闭三种模式。
 3. **HA 事件流** — agent/request 直通 → 失败计数 → 隔离 → agent/request 切换备用。
 4. **重试预算耗尽放行**、**agent/error 停止兜底**（隔离 + 延迟 steer）。
-5. **orchestrate 工具 execute** — `fanout` / `pipeline`(carry) / `supervisor`。
+5. **orchestrate 工具 execute** — `fanout` / `pipeline`(carry) / `supervisor` / `map-reduce` / `router`。
 6. **list-subagents execute**、未知子智能体名报错。
 7. **配置持久化** — `stateSet` 写盘 → 新实例重启恢复（磁盘状态机还原）。
 8. **agentsGenerate** 智能新增子智能体（生成 → `stateSet` 落库 → 清单可见）。
 9. **语言跟随**（settings/updated）、`haReset`、模型列表/默认选择。
-10. **Phase 1/2/3 扩展用例** — 类型化事件（failover / circuit-opened / circuit-closed）、
+10. **Phase 1/2/3/4 扩展用例** — 类型化事件（failover / circuit-opened / circuit-closed）、
     不可重试错误、CONTEXT_WINDOW_EXCEEDED 降级、provider 级熔断、探测恢复与失败延长、
     `/ha` 命令（status/reset/probe）、HA 运行态持久化、`haSuggestBackups`、`haStatus`、
     run 记录（JSONL 落盘）、实时进度事件（run-start / task-status / run-end）、
     pipeline 阶段隔离与重试、fanout 合并、`/orchestrate` 命令与 presets、评审轮次、
-    map-reduce、router、配方（保存/列出/执行/删除）、resume、全局并发、
-    `stateExport`/`stateImport`。
+    map-reduce、router、配方（保存/列出/执行/删除）、resume、全局并发、预算、
+    多评审者、实时活动 run、`stateExport`/`stateImport`、用户主动 skill。
+11. **当前 v0.12 调研能力** — 自定义子智能体工具裁剪、provider 能力门控、`outputHint` /
+    object-root `outputSchema`、`maxDepth`、内置调研 agent，以及 run 工件/并发写入的回归行为。
 
-**全量合计 = 120 单测 + 40 集成 = 160 例。**
+**全量合计 = 136 单测 + 68 集成 = 204 例。**
 
 ---
 
@@ -171,7 +173,7 @@ CI 不执行 `npm publish`；发布动作由后述发布流程人工/带环境�
 ## 发布前后核对清单
 
 - [ ] `npm run prepublishOnly` 全绿（typecheck / build / check / test / verify 无一失败）。
-- [ ] `npm test` 全量 160 例通过（120 单测 + 40 集成）。
+- [ ] `npm test` 全量 204 例通过（136 单测 + 68 集成）。
 - [ ] `npm run verify` 输出 `[verify] 6 checks passed`。
 - [ ] `npm pack` 产物含 `lib/ src/ .language/ cordis.patch.yml docs/ README* CHANGELOG.md LICENSE`。
 - [ ] 版本号与 CHANGELOG 一致，`git tag v<version>` 已推送。

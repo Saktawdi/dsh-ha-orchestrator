@@ -17,21 +17,20 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `dsh-ha-orchestrator.config.json` | 主配置持久化文件。每次 `stateSet` / `stateImport` / 配方保存成功都会整体写盘（`JSON.stringify(state.config, null, 2)`）。 |
+| `dsh-ha-orchestrator.config.json` | 主配置持久化文件。`stateSet` / `stateImport` / 配方保存都会尝试整体写盘（`JSON.stringify(state.config, null, 2)`）；结果中的 `persist` 字段反映最近一次配置写入状态。 |
 | `dsh-ha-orchestrator.config.backup.json` | 备份文件。写主文件前，若存在旧配置则先把旧内容备份到该文件；备份失败不影响主写。 |
-| `dsh-ha-orchestrator.ha.json` | HA 运行态（隔离 / 失败计数 / 游标 / 历史）。防抖 500ms 写盘；全部为空时不生成。重启后自动恢复。 |
+| `dsh-ha-orchestrator.ha.json` | HA 运行态（隔离 / 失败计数 / 游标 / 历史）。防抖 500ms 写盘；重启后自动恢复。清空状态后也可能保留一个空状态文件。 |
 | `dsh-ha-orchestrator.runs.jsonl` | 每次 orchestrate run 的记录，JSONL 追加写；磁盘保留最近 200 条、内存保留最近 50 条。 |
+| `dsh-ha-orchestrator.run-<runId>.md` | 每次 run 的 Markdown 工件，包含完整子任务输出、实际模型 `lastKey` 和 summary；当前不自动修剪。 |
 
 ### 1.2 多目录降级
 
-配置与运行态持久化的目录查找顺序（写入与读取用同一顺序，保证重启后能找到同样位置）：
+配置、HA 状态和 run 工件的目录查找顺序（读取与写入尽量使用同一顺序）：
 
 1. **会话 workspace**：优先取当前 agent 会话的 `header.cwd`；拿不到则回退 `DSH_HOME` 环境变量值。
 2. **沙箱 workspace-write 可写根**：取 `sandboxPolicy` 服务的 `workspaceRoot`（默认即 DSH web 进程 cwd，workspace-write 模式下必可写）。
-3. **fs 默认 cwd**：当以上目录都为空时，`resolveStorageTargetIn('', name)` 落到 fs 服务默认 cwd。
-
-写入时遍历上述目录，**第一个解析成功的目录即写入成功位置**，并把该目录记为
-`activeStorageDir`；读取时优先从最近一次成功写入的目录读，避免目录顺序变化导致读到旧的默认配置。
+写入时遍历前两个目录，**第一个解析并写入成功的目录即成为 `activeStorageDir`**；读取时优先从最近一次成功写入的目录读，避免目录顺序变化导致读到旧的默认配置。
+如果前两个目录都不存在，配置和 HA 状态写入会失败并在诊断中显示原因；run JSONL 与 Markdown 工件还会尝试使用 fs 服务默认 cwd。
 
 ### 1.3 启动加载与重试
 
@@ -39,6 +38,8 @@
 - 若首次加载失败，进入**定时重试**：最多 30 次、每 2s 一次（`CONFIG_LOAD_MAX_RETRIES = 30`，`CONFIG_LOAD_RETRY_MS = 2000`）。
 - **stateGet 懒加载兜底**：即使定时重试也未成功，设置页每次拉状态（`stateGet`）时会再补一次加载；
   加载成功后重建工具（orchestrate / list-subagents）并重新跟随语言。
+- HA 运行态与配置在启动阶段按相同目录顺序尝试恢复；若宿主服务在插件启动后才出现，建议通过诊断确认
+  `haStateLoaded` 与持久化状态，必要时重启插件/宿主后再验证旧隔离是否恢复。
 
 ### 1.4 设置页「系统」卡片一键导出 / 导入
 
@@ -61,8 +62,8 @@
 
 ### 2.1 `ha` — 模型高可用（HA）
 
-设置页「模型高可用」卡片对应本节。消费点：`agent/request`、`agent/request-error`、`agent/error`
-三个事件处理器（`src/index.ts`）。
+设置页「模型高可用」卡片对应本节。消费点：主智能体的 `agent/request`、`agent/request-error`、`agent/error`
+三个事件处理器（`src/index.ts`）；编排子智能体由 `AgentEntry.fallbacks` 独立处理。
 
 | 字段 | 类型 | 默认值 | 钳制规则 | 作用 |
 | --- | --- | --- | --- | --- |
@@ -87,12 +88,17 @@
 | --- | --- | --- | --- | --- |
 | `enabled` | boolean | `true` | `!!value` | orchestrate 工具总开关。关闭后调用即抛错（`orch.errDisabled`）。同时关闭会影响上下文注入的兜底自动编排引导（见 `ctx`）。 |
 | `provider` | string | `''` | `String` | 子智能体提供方。留空 = 自动取第一个可用提供方；设置后若已注册提供方列表中存在则用，否则回退第一个。 |
-| `concurrency` | number | `3` | `Math.max(1, Math.min(32, …))` | 默认并发数（fanout / supervisor / map-reduce 并行池上限）。调用侧 `concurrency` 参数可覆盖；实际并发还受 `maxAgents` 封顶。 |
-| `maxAgents` | number | `8` | `Math.max(1, Math.min(64, …))` | 最大子智能体数：tasks 超过该值会被截断（`truncateTasks`），也是并发上限的封顶值。 |
+| `concurrency` | number | `6` | `Math.max(1, Math.min(32, …))` | 默认并发数（fanout / supervisor / map-reduce 并行池上限）。调用侧 `concurrency` 参数可覆盖；实际并发还受 `maxAgents` 封顶。 |
+| `maxAgents` | number | `16` | `Math.max(1, Math.min(64, …))` | 最大子智能体数：tasks 超过该值会被截断（`truncateTasks`），也是并发上限的封顶值。 |
 | `stageRetry` | number | `0` | `Math.max(0, Math.min(5, …))` | pipeline 单阶段失败重试次数。0 = 不重试，失败即标记该阶段 `error` 并中止后续阶段（阶段隔离）。 |
 | `globalConcurrency` | number | `0` | `Math.max(0, Math.min(64, …))` | 全局并发上限（跨所有 orchestrate run 共享信号量）。0 = 不限，单 run 并发由 `concurrency`/`maxAgents` 控制；>0 时并发满则排队等待配额。 |
 | `presets` | array\<[OrchPreset](#orchpreset-配方)> | `[]` | 按结构清洗：每项需 `name` 非空，`tasks` 每项需 `prompt` 非空 | 已保存的编排配方（一次成功 orchestrate 调用参数的可复用快照）。调用侧 `preset` 参数按 `name` 命中加载。 |
-| `agents` | array\<[AgentEntry](#agententry-自定义子智能体)> | 内置 `reviewer` 一项 | 需 `name` 非空；`String` 化各字段 | 自定义子智能体清单。`list-subagents` 返回其 name/provider/model/description；`orchestrate` 中 `task.agent` / 顶层 `agent` / `supervisorAgent` 按 name 解析。 |
+| `mergeBodyLimit` | number | `8000` | `0..100000` | merge/supervisor/reduce 汇总输入中，每个子任务正文的字符上限；0 使用代码默认值。 |
+| `mergeTotalLimit` | number | `48000` | `0..400000` | merge/supervisor/reduce 汇总输入的总字符上限；0 使用代码默认值。 |
+| `renderRunLimit` | number | `8000` | `0..100000` | 工具结果中每个子任务输出的渲染字符上限；0 使用代码默认值。 |
+| `renderTotalLimit` | number | `60000` | `0..400000` | 工具结果整体渲染字符上限；0 使用代码默认值。 |
+| `maxDepth` | number | `0` | `0..8` | 下发给支持该能力的 provider 的委托深度硬上限；0 关闭。插件仍会独立拒绝子智能体再次调用 `orchestrate`。 |
+| `agents` | array\<[AgentEntry](#agententry-自定义子智能体)> | 内置 `reviewer`、`researcher`、`research-merger` | 需 `name` 非空；`String` 化各字段 | 自定义子智能体清单。`list-subagents` 返回其 name/provider/model/description；`orchestrate` 中 `task.agent` / 顶层 `agent` / `supervisorAgent` / `reviewers` 按 name 解析。 |
 
 #### `OrchPreset`（配方）字段
 
@@ -105,6 +111,9 @@
 | `mergeInstructions` | 合并指令文案。 |
 | `tasks` | `[{ id?, label?, agent?, prompt }]`，每项 `prompt` 必填。 |
 
+> 配方持久化当前只保留任务的 `id`、`label`、`agent`、`prompt`；调用侧的 `outputHint` 与
+> `outputSchema` 不会随 `orchSavePreset` / `sanitizeConfig` 写入配方。
+
 #### `AgentEntry`（自定义子智能体）字段
 
 | 字段 | 作用 |
@@ -112,8 +121,12 @@
 | `name` | 唯一英文标识（`list-subagents` / `orchestrate` 中按名称指定）。 |
 | `provider` | provider；留空 = 继承 DSH 默认模型。 |
 | `model` | model；留空 = 继承 DSH 默认模型。 |
+| `reasoningEffort` | 可选的模型推理强度（provider 定义的不透明字符串，如 `low` / `medium` / `high`）；留空 = 使用 provider/model 默认值。即使 provider/model 留空，也可以单独覆盖默认模型的 effort。 |
 | `description` | 展示给模型的用途说明。 |
 | `systemPrompt` | 子智能体的系统提示词（persona）。 |
+| `tools.allow` | 可选工具白名单；非空时只允许这些宿主工具。provider 不支持工具裁剪时会在启动前剥离。 |
+| `tools.deny` | 可选工具黑名单；provider 不支持工具裁剪时会在启动前剥离。 |
+| `fallbacks` | 可选的独立模型回退链，按顺序保留 `{label, provider, model, reasoningEffort}`；每个回退项的 effort 独立于主模型。子智能体启动失败或返回 `stopReason=error` 时依次重启该角色。留空/省略表示不启用角色级回退，不读取全局 `ha.backups`。设置页文本格式为 `provider/model@effort`，省略 `@effort` 表示该回退模型使用默认 effort。 |
 
 ### 2.3 `debug` — 开发调试
 
@@ -152,7 +165,7 @@
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `mode` | string | 编排模式，枚举：`fanout`（并行分发并汇总）/ `pipeline`（顺序执行，前段输出作下段上下文）/ `supervisor`（并行执行后启动监督子智能体按 `mergeInstructions` 审查合成）/ `map-reduce`（并行拆分执行后统一归约）/ `router`（从候选任务路由选择一项执行）。未知值恒归一为 `fanout`。 |
-| `tasks` | array | 任务列表，每项 `{ id?, label?, agent?, prompt }`，`prompt` 必填。数量超过 `maxAgents` 时截断。 |
+| `tasks` | array | 任务列表，每项 `{ id?, label?, agent?, prompt, outputHint?, outputSchema? }`，`prompt` 必填。数量超过 `maxAgents` 时截断；`outputSchema` 仅接受 object 根 Schema。 |
 | `agent` | string | 默认自定义子智能体名称（顶层默认，可用 `list-subagents` 查询）。 |
 | `supervisorAgent` | string | supervisor 模式使用的监督子智能体名称。不为指定的 mode 指定时用 `defaultDef`。 |
 | `mergeInstructions` | string | 合并/监督合成的指令文案。fanout / supervisor / map-reduce 使用；缺省回退 `orch.mergeDefault`（或预置值）。 |
@@ -163,13 +176,15 @@
 | `reviewers` | string[] | supervisor 模式并行评审的自定义子智能体名称数组；每个评审者独立 run，输出并入综合上下文后由 supervisor 合成。名称同样走未知名校验。 |
 | `budgetAgents` | number | 本次编排的子智能体调用预算（含重试/评审/合成）：**`Math.max(0, Math.min(128, Number()\|\|0))`，0 = 不限**。超限抛 `orch.errBudget` 并中止（预算错误经 `isolate=false` 穿透任务级隔离）。 |
 
-> `reviewRounds` 的钳制是执行期的局部钳制（非配置项），因此单独列出取值范围
-> **1..3**（默认 1）。它是 `orchestrate` 唯一的数参钳制上限。
+> `reviewRounds` 与 `budgetAgents` 的钳制是执行期的局部钳制（非配置项）：前者为 **1..3**
+>（默认 1），后者为 **0..128**（默认 0 = 不限）；`concurrency` 则按 `1..maxAgents` 解析。
 
 其他注意点（来自 `execute`）：
 
 - `tasks` / `agent` / `supervisorAgent` / `reviewers` 引用了未在 `orch.agents` 中定义的名称会抛
   `orch.errUnknownAgent`（附带可用清单）。
+- `outputHint` 会追加到对应子任务 prompt 末尾；`outputSchema` 在 provider 支持时透传为结构化输出，
+  结果会以 `[structured] {json}` 行嵌入该 run 的 `output`。
 - 每次调用生成 `runId`（结果值含 `runId`），结束（含中止/异常）后落盘一条 `RunRecord`；设置页「诊断」卡片与
   `/orchestrate runs|show <runId>|presets`、`/ha` 命令可观测。
 - `globalConcurrency > 0` 时执行前要先获取共享并发配额。
@@ -217,6 +232,11 @@
     "maxAgents": 12,
     "stageRetry": 1,
     "globalConcurrency": 0,
+    "mergeBodyLimit": 8000,
+    "mergeTotalLimit": 48000,
+    "renderRunLimit": 8000,
+    "renderTotalLimit": 60000,
+    "maxDepth": 0,
     "presets": [
       {
         "name": "code-review",
@@ -242,8 +262,12 @@
         "name": "planner",
         "provider": "openai",
         "model": "gpt-4o",
+        "reasoningEffort": "high",
         "description": "需求拆解与实现计划专家。",
-        "systemPrompt": "你是资深技术主管：把目标拆解为可执行阶段，给出实现顺序与验收标准。"
+        "systemPrompt": "你是资深技术主管：把目标拆解为可执行阶段，给出实现顺序与验收标准。",
+        "fallbacks": [
+          { "label": "本地备用", "provider": "ollama", "model": "qwen2.5:14b", "reasoningEffort": "low" }
+        ]
       }
     ]
   }
@@ -251,8 +275,9 @@
 ```
 
 说明：`concurrency`（1..32）、`maxAgents`（1..64）、`stageRetry`（0..5）、
-`globalConcurrency`（0..64）均在钳制范围内；`provider: ""` 表示自动选第一个可用提供方；
+`globalConcurrency`（0..64）、`maxDepth`（0..8）均在钳制范围内；`provider: ""` 表示自动选第一个可用提供方；
 子智能体 `provider`/`model` 留空即继承 DSH 默认模型。
+`reasoningEffort` 同样可以独立配置；设置页提供 `low` / `medium` / `high` 常用选项，也允许填写 provider-specific 值。
 
 ---
 
@@ -273,12 +298,17 @@
 | ha.degradeContextWindow | false | — | — |
 | orch.enabled | true | — | — |
 | orch.provider | '' | — | — |
-| orch.concurrency | 3 | 1 | 32 |
-| orch.maxAgents | 8 | 1 | 64 |
+| orch.concurrency | 6 | 1 | 32 |
+| orch.maxAgents | 16 | 1 | 64 |
 | orch.stageRetry | 0 | 0 | 5 |
 | orch.globalConcurrency | 0 | 0 | 64 |
+| orch.mergeBodyLimit | 8000 | 0 | 100000 |
+| orch.mergeTotalLimit | 48000 | 0 | 400000 |
+| orch.renderRunLimit | 8000 | 0 | 100000 |
+| orch.renderTotalLimit | 60000 | 0 | 400000 |
+| orch.maxDepth | 0 | 0 | 8 |
 | orch.presets | [] | — | — |
-| orch.agents | [reviewer] | 每项 name 必填 | — |
+| orch.agents | [reviewer, researcher, research-merger] | 每项 name 必填 | — |
 | debug.enabled | false | — | — |
 | debug.showCard | false | — | — |
 | lang.mode | 'auto' | 仅 zh/en，其余回 auto | — |

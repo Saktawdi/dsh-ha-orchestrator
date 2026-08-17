@@ -14,7 +14,7 @@ dsh-ha-orchestrator 是一个 **静态 Cordis 插件**，随 DSH 进程启动自
 - **编排（Orchestration）**：提供 `orchestrate` 工具（fanout / pipeline / supervisor，以及 map-reduce / router），模型在适合时自动把任务拆给并行子智能体执行；
 - **配置 UI**：中英双语设置页，可定义/用 AI 生成自定义子智能体、导出/导入配置。
 
-完整架构、模块职责、三条数据流（HA 事件流 / 编排执行流 / 三套持久化）与服务契约，详见 [`docs/architecture.md`](docs/architecture.md)。
+完整架构、模块职责、三条数据流（HA 事件流 / 编排执行流 / 持久化与 RPC）与服务契约，详见 [`docs/architecture.md`](docs/architecture.md)。
 
 **目录结构速览**（源码视图）：
 
@@ -69,9 +69,9 @@ npm run typecheck
 
 - **`src/` 为 TypeScript strict**：开启 `strict` / `NodeNext` / `declaration`。改动需通过 `npm run typecheck`。
 - **纯逻辑模块不含 DSH 依赖**：`config.ts` / `ha-core.ts` / `orch-runner.ts` / `language.ts` / `remote.ts` 是无 `ctx` 的纯模块，可独立单测。持 `ctx` 的接线只应出现在 `src/index.ts`；`types.ts` 只定义接口与 `getService()` 取用服务（rc 阶段类型易变，优先最小结构接口而非直接依赖 `dsh-*` 类型）。
-- **行为改动必须配测试**：逻辑改动在 `tests/*.test.js`（node:test）补单测；涉及装配 / 事件流 / 编排执行 / 持久化的改动建议在 `tests/integration/host.test.js` 用最小假 ctx 驱动真实插件补集成测试。运行 `npm test`。
+- **行为改动必须配测试**：逻辑改动在 `tests/*.test.js`（node:test）补单测；涉及装配 / 事件流 / 编排执行 / 持久化 / RPC 的改动建议在 `tests/integration/host.test.js` 用最小假 ctx 驱动真实插件补集成测试。运行 `npm test`。
 - **语言包 zh/en 键严格对等**：`.language/zh.json` 为基准，`en.json` 必须包含完全相同的键集（`language.ts` 用严格 JSON 解析，缺失键回滚到中文；请勿引入仅单边存在的键）。
-- **构建产物 `lib/` 随提交**：`lib/` 是 tsc 构建产物（含 `.d.ts`）＋手写 `lib/client.js`（lazy-CJS bundle）。请运行 `npm run build` 后把更新后的 `lib/` 一并提交——发布与 CI 直接消费 `lib/`，仓库内不重建。
+- **构建产物 `lib/` 随提交**：`lib/` 是 tsc 构建产物（含 `.d.ts`）＋手写 `lib/client.js`（lazy-CJS bundle）。请运行 `npm run build` 后把更新后的 `lib/` 一并提交——发布与 CI 直接消费 `lib/`，仓库内不重建。文档改动不需要重建 `lib/`。
 - **不 patch DSH 核心**：只用公开 `ctx.tools` / `ctx.systemPrompt` / `ctx.subagents` / `ctx.llm` / `agent/*` 事件等稳定接缝；坚持 mount-only / bundle-only。
 - 提交只做一件事，保持 diff 小；改动描述聚焦「为什么」。
 
@@ -116,7 +116,7 @@ chore: 升级 peerDependencies 至 rc.6 类型线
 ## 6. 测试
 
 - **单测**：`tests/*.test.js`（`config` / `ha-core` / `orch-runner` / `language` / `remote` 纯逻辑，node:test）。
-- **集成测试**：`tests/integration/host.test.js`——用最小假 ctx（cordis waterfall / emit / reflect 语义）驱动真实插件构建产物，覆盖装配、上下文注入求值、HA 事件流、编排三种模式 execute、配置持久化与重启恢复、语言跟随等。
+- **集成测试**：`tests/integration/host.test.js`——用最小假 ctx（cordis waterfall / emit / reflect 语义）驱动真实插件构建产物，覆盖装配、上下文注入求值、HA 事件流、五种编排模式 execute、配置持久化与重启恢复、RPC、语言跟随、运行记录和随包 skill 等。
 
 新增 / 修改逻辑后：跑 `npm test`。若你新增了纯函数，请补对应 `tests/*.test.js`；若改了装配/事件/持久化，请补/更新 `tests/integration/host.test.js`。测试文件命名保持既有风格（`*.test.js`），且在 `package.json` 的 `test` 脚本 glob 范围内。
 
@@ -139,7 +139,7 @@ chore: 升级 peerDependencies 至 rc.6 类型线
 发布由维护者执行，贡献者无需关心细节。要点如下：
 
 - 发布前先更新 `CHANGELOG.md`（遵循 Keep a Changelog 风格，含版本号与日期），并核对 `docs/` 文档（架构 / 配置 / 兼容矩阵）。
-- 以 `pnpm verify` / `npm run verify`（同 prepublishOnly 全链路）作为发布前门禁。
+- 以 `npm run prepublishOnly`（或按顺序执行 `npm run typecheck`、`npm run build`、`npm run check`、`npm test`、`npm run verify`）作为发布前门禁。
 - 打 `git tag`（`v<version>`）并创建 GitHub Release，附带 `npm pack` 产物（`.tgz`）。
 - npm 发布侧：包名为 `dsh-ha-orchestrator`（public access），产物经 `files` 字段包含 `lib/`、`cordis.patch.yml`、`.language/`、`README.md`、`README.zh-CN.md`、`CHANGELOG.md`、`docs/`、`LICENSE`。
 

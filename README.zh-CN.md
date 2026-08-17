@@ -1,19 +1,34 @@
-![HA Orchestrator 配置页](docs/settings.png)
+![HA Orchestrator —— 模型故障恢复与多智能体编排](docs/hero-banner.png)
 
 # HA Orchestrator
 
-[![Version](https://img.shields.io/badge/version-v0.2.1-4d6bfe?style=flat-square)](https://github.com/Saktawdi/dsh-ha-orchestrator/releases/tag/v0.2.1)
-[![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square)](https://github.com/deepseek-ai/dsh)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+<p align="center">
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.0-4d6bfe?style=flat-square" alt="版本" height="20"></a>
+  <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="平台" height="20"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="许可证 MIT" height="20"></a>
+  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-204%20passing-2ea44f?style=flat-square" alt="测试" height="20"></a>
+  <a href="docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="编排模式" height="20"></a>
+  <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin" height="20"></a>
+</p>
 
 HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh）的插件：
 
 - 模型调用中途出错时，自动改用备用模型重试，任务继续跑下去。
-- 提供一个 `orchestrate` 工具，模型遇到适合的任务会自己调用它，把工作拆给多个子智能体并行执行（`fanout`）、分阶段执行（`pipeline`），或加一道评审（`supervisor`）。
+- 提供一个 `orchestrate` 工具，模型遇到适合的任务会自己调用它，把工作拆给多个子智能体并行执行（`fanout`）、分阶段执行（`pipeline`），或进行评审/归约（`supervisor`、`map-reduce`、`router`）。
 
 配置页里还能定义自己的子智能体（也可以一句话让 AI 生成）；界面和提示词文案支持中英文，跟随 DSH 语言。
 
 [English](README.md)
+
+> **扛住模型故障，并行推进复杂工作，把结果交付得更可靠。**
+>
+> HA Orchestrator 让 DSH 长任务在模型出错时继续运行，再把复杂工作拆成可观测、可恢复、可评审的并行子智能体流程。
+
+| 🛡️ **模型故障不终止长任务** | ⚡ **复杂工作横向并行** | ✅ **结果可检查、可交付** |
+| :-- | :-- | :-- |
+| 备用轮换、冷却、Provider 熔断和恢复探测，避免单个模型故障拖垮任务。 | 五种编排模式覆盖并行调研、分阶段计划、路由、归约和监督评审。 | 预算、运行历史、resume、结构化输出和多评审者，让最终结果更可追踪。 |
+
+**特别适合：** 深度调研、大型代码库阅读、批量审查、多方案对比和实现计划编排。
 
 ## 功能
 
@@ -21,6 +36,7 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 - 模型请求出错时，自动改用下一个备用模型重试，备用模型按顺序轮换。
 - 出错的模型被暂时跳过（进入冷却），冷却结束后自动恢复使用。
+- 支持突发窗口失败计数、Provider 级熔断、低成本恢复探测，以及可选的上下文超长降级。
 - 每次故障有重试上限，用尽后停止重试，不会无限循环。
 - 模型错误中断任务时，插件会把任务重新拉起一次，工作不丢失。
 
@@ -33,6 +49,10 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 - `fanout` — 拆成子任务并行执行，再汇总结果。
 - `pipeline` — 各阶段依次执行，上一阶段的输出作为下一阶段的输入。
 - `supervisor` — 并行执行子任务后，由监督子智能体审查合并。
+- `map-reduce` — 并行执行 map 任务，再由归约子智能体合并结果。
+- `router` — 把候选任务交给一个路由子智能体，由它选择或安排后续工作。
+
+工具还支持保存配方、按 runId 恢复中断任务、监督评审轮次、多评审者、单次子智能体调用预算、结构化输出 Schema，以及自定义子智能体的工具白名单/黑名单。子智能体默认不能再次发起嵌套编排。
 
 如果某次没有自动编排，直接说"用编排"即可。
 
@@ -44,7 +64,7 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 ### 自定义子智能体
 
-在配置页定义可复用的子智能体：名称、provider/模型、描述、系统提示词，任务按名称调用，模型随时可以查询清单。「智能新增」按钮：一句话描述需求，由当前模型生成完整定义。
+在配置页定义可复用的子智能体：名称、provider/模型、模型 `effort`、描述、系统提示词，以及可选的工具白名单/黑名单。每个角色还可以单独配置按顺序执行的 `fallbacks` 模型链，并为每个回退项写 `provider/model@effort`；启动失败或子智能体返回模型错误时，只切换该角色自己的回退链，不读取全局 HA 备用模型。任务按名称调用，模型随时可以查询清单；单个任务还可以指定输出要求或 object 根 JSON Schema（前提是 provider 支持）。「智能新增」按钮：一句话描述需求，由当前模型生成完整定义。
 
 ### 中英双语
 
@@ -52,7 +72,7 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 ## 安装
 
-需要：[DeepSeek Harness](https://github.com/deepseek-ai/dsh)（web profile）。无构建步骤，无运行时依赖。
+需要：[DeepSeek Harness](https://github.com/deepseek-ai/dsh)（web profile）。发布包无需本地构建，运行时 peer 服务由 DSH 提供。
 
 ### 方法一：npm 一条命令安装（推荐）
 
@@ -93,7 +113,7 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 3. 无需重启：profile 的 patch 层会被热加载（Cordis HMR），插件在运行中的进程里直接生效。刷新浏览器页面即可看到配置页。插件同样随进程启动自动加载，重启后依然生效。
 
-> **版本说明：** [v0.1.0](https://github.com/Saktawdi/dsh-ha-orchestrator/releases/tag/v0.1.0) 是上一代动态版（经 `cordis_define` 按会话加载），仅作功能预览；从 v0.2.0 起为静态插件，随 DSH 启动自动加载，本 README 描述的是 v0.2.1 及之后的版本。从引入 bundle patch 的版本起，推荐使用方法一（一条命令安装）安装。
+> **版本说明：** [v0.1.0](https://github.com/Saktawdi/dsh-ha-orchestrator/releases/tag/v0.1.0) 是上一代动态版（经 `cordis_define` 按会话加载），仅作功能预览；从 v0.2.0 起为静态插件，随 DSH 启动自动加载。从引入 bundle patch 的版本起，推荐使用方法一（一条命令安装）安装。
 
 ## 用法
 
@@ -113,6 +133,18 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 模型:  自动调用 orchestrate（supervisor）→ 并行分析 → 评审合并 → 输出报告
 ```
 
+## 展示
+
+<p align="center">
+  <img src="docs/settings-gallery.png" alt="HA Orchestrator 设置展示：模型高可用、子智能体编排、自定义子智能体与编辑页" width="1000">
+</p>
+
+<p align="center">
+  <img src="docs/run-states-gallery.png" alt="HA Orchestrator 已完成运行与预算耗尽异常状态" width="1000">
+</p>
+
+> 注：上述展示来源版本：v0.12.x
+
 ### 已注册命令
 
 插件还会注册两个可选的斜杠命令，用于查看和管理运行状态/记录：
@@ -131,17 +163,26 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 > 这些命令通过 DSH 的 `commands` 服务注册。如果部署环境没有该服务，插件仍可正常使用，只是这些斜杠命令不可用。
 
+如果宿主提供 `skills` 服务，插件还会注册一个可由用户主动调用的随包 `dsh-ha-orchestrator` skill，内容是使用与排障指南；它不会进入模型自动可调用的 skill 目录。
+
 ### 配置页
 
 设置 →「HA 与编排」：
 
+页面顶部有一张**概览横幅**，一眼可见 HA 启用状态、当前默认模型、备用模型数、编排状态与活动运行数。
+
 | 卡片 | 作用 |
 | :-- | :-- |
-| 模型高可用 | 开关、备用模型列表（含「推荐备份」）、「高级设置」：冷却时间、失败阈值、突发窗口、Provider 熔断阈值、探测恢复、上下文超长降级、错误码过滤、持久化选择、停止后引导 |
-| 子智能体编排 | 开关、子智能体提供方、默认并发数、单次任务子智能体上限、全局并发上限、流水线阶段重试 |
-| 自定义子智能体 | 增删改、排序；「智能新增」用 AI 生成 |
-| 诊断 | HA 运行态（当前默认模型、隔离含层级/失败计数/游标/探测/切换历史、清除隔离与历史）与最近编排运行 |
+| 模型高可用 | 开关、备用模型列表（结构化行 + 行内编辑下拉；含「推荐备份」与空状态引导）、「高级设置」：冷却时间、失败阈值、突发窗口、Provider 熔断阈值、探测恢复、上下文超长降级、错误码过滤、持久化选择、停止后引导 |
+| 子智能体编排 | 开关、子智能体提供方、默认并发数（6）、单次任务子智能体上限（16）、全局并发上限、流水线阶段重试、合并/渲染截断、委托深度上限（按「基本 / 并发与预算 / 高级」分组） |
+| 自定义子智能体 | 增删改、排序（首字母头像 + 模型/effort 徽章）；内置 reviewer/researcher/research-merger；「智能新增」用 AI 生成；支持工具白名单/黑名单与独立回退链 |
+| 诊断 | HA 运行态（当前默认模型、隔离含层级与冷却倒计时、失败计数、游标、探测、切换历史、清除隔离与历史）与**可展开的最近运行**（模式徽章、耗时、子任务状态表、lastKey 与结果摘要；重启后仍可见历史） |
 | 系统 | 插件语言（跟随系统 / 中文 / English）、编排引导开关、注入状态、一键导出/导入配置、调试卡片开关 |
+
+对话过程中还有两处可见状态：
+
+- **orchestrate 运行卡片**（对话流内）：实时进度条 + 百分比、子任务状态点、每个子代理实际使用的模型（lastKey）；完成后显示 runId 与输出摘要。
+- **HA 状态胶囊**（工具区）：折叠为单行（启用 / 备份数 / 隔离数 / 最近切换），点击展开冷却倒计时、最近切换记录与活动运行。
 
 ## 文档
 
@@ -153,8 +194,9 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 
 ## 注意事项
 
-- 配置写入「当前会话 workspace / DSH_HOME、沙箱 workspace-write 可写根、fs 默认 cwd」中第一个可写位置（文件 `dsh-ha-orchestrator.config.json`，备份 `dsh-ha-orchestrator.config.backup.json`），启动时按相同顺序查找并恢复。
-- HA 运行态（隔离、失败计数、轮换游标、切换历史）防抖持久化到 `dsh-ha-orchestrator.ha.json`，重启自动恢复；编排运行记录写入 `dsh-ha-orchestrator.runs.jsonl`。
+- 配置和 HA 状态按「会话 workspace / `DSH_HOME` → 沙箱 `workspace-write` 可写根」查找；没有候选目录时，配置写入会在诊断里报告失败。运行记录和 Markdown 工件在没有候选目录时还会尝试写入 fs 服务默认 cwd。
+- HA 运行态（隔离、失败计数、轮换游标、切换历史）以 500ms 防抖持久化到 `dsh-ha-orchestrator.ha.json`，重启自动恢复；编排运行记录写入 `dsh-ha-orchestrator.runs.jsonl`（磁盘最多 200 条、内存最多 50 条），并额外生成 `dsh-ha-orchestrator.run-<runId>.md`，包含完整子任务输出。
+- 运行记录和工件可能包含任务 prompt 与模型输出，请确保 workspace 只对可信用户/进程可读。
 - `/ha` 与 `/orchestrate` 的所有斜杠命令见上方「已注册命令」。
 
 ## License
