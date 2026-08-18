@@ -1,7 +1,7 @@
 ![HA Orchestrator — model recovery and multi-agent orchestration](docs/hero-banner.png)
 
 <p align="center">
-  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.1-4d6bfe?style=flat-square" alt="Version" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.2-4d6bfe?style=flat-square" alt="Version" height="20"></a>
   <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="Platform" height="20"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License: MIT" height="20"></a>
   <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-219%20passing-2ea44f?style=flat-square" alt="Tests" height="20"></a>

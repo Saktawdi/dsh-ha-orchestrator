@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.12.2] - 2026-08-18
 
 ### Added
 - **`/ha-orch-resume <runId>` 命令**：用户可直接按 runId 恢复未完成的编排运行，复用历史已完成子任务、只跑剩余部分；与模型调用走同一份 orchestrate execute 语义（含留痕/事件/预算）。新增 `orch.resume*` 中英文案与 i18n key。

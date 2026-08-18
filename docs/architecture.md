@@ -1,6 +1,6 @@
 # dsh-ha-orchestrator 架构文档
 
-> 版本：v0.12.1（对齐当前 `src/` 代码快照）
+> 版本：v0.12.2（对齐当前 `src/` 代码快照）
 > 范围：基于仓库实际代码（`src/index.ts`、`src/config.ts`、`src/ha-core.ts`、`src/orch-runner.ts`、
 >       `src/language.ts`、`src/remote.ts`、`src/types.ts`、`package.json`、`cordis.patch.yml`）编写，
 >      说明本插件的静态 Cordis 装配方式、模块职责、三条关键数据流、服务契约与设计原则。
