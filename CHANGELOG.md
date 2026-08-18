@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+- **`/ha-orch-resume <runId>` 命令**：用户可直接按 runId 恢复未完成的编排运行，复用历史已完成子任务、只跑剩余部分；与模型调用走同一份 orchestrate execute 语义（含留痕/事件/预算）。新增 `orch.resume*` 中英文案与 i18n key。
+- **子智能体输出 token 上限（maxTokens）**：编排级 `orch.maxTokens`（0=继承父级，钳制 0..128000）+ 单角色 `AgentEntry.maxTokens` 覆盖；经 `buildSubagentRequest` 透传到 `agentOptions.maxTokens`，provider 不支持时安全剥离。
+
+### Changed
+- **`max-tokens` 视为可用输出**：`isUsableRunStatus` 把 `completed` 与 `max-tokens` 均视为有可用输出；resume 复用、失败留痕提示与 autoResume 判定不再丢弃已达 token 上限的子任务输出。
+- **autoResume 只锁定最新匹配 run**：同一会话/模式/任务存在多条记录时，只复用「最新一条」且本身部分完成的 run，避免新 run 已覆盖后复活旧 run 结果；显式 resume 未带 tasks 时回退历史完整任务定义。
+- **`/orchestrate runs` 增强**：最近列表从 10 条扩到 24 条，每条附带一行结果摘要（`orch.result`）；`rawInput`/`agent`/`signal` 命令载荷适配 dsh-commands 真实调用。
+- **HA 默认失败阈值调整为 3**（`ha.threshold: 1 → 3`），降低单次偶发错误即隔离的概率；设置页与文档默认值同步。
+
+### Fixed
+- 命令处理器统一读取 `rawInput`（兼容旧 `input`），修复 dsh-commands 载荷字段不一致时 `/ha`、`/orchestrate`、`/ha-orch-resume` 收不到参数的问题。
+- 诊断卡「最近运行」新增「完成（输出截断）」状态标识（`diag.runTruncated`）。
+
+### 工程门禁
+- 测试 **216 → 219**（新增 `/ha-orch-resume`、`maxTokens`、autoResume 边界回归），全量 143 单测 + 76 集成。
+
+## [0.12.1] - 2026-08-18
+
+### Fixed
+- **orchestrate 输出 schema 声明 `agentId`**：工具实际返回的 run 带 `agentId` 字段，但输出 schema `additionalProperties: false` 未声明该字段导致结果校验失败；现已在 run item schema 与 render 类型中同步声明，并新增回归断言。
+
 ## [0.12.0] - 2026-08-17
 
 产品化视觉升级（UI 全面重构 + 发布前收尾）。视觉对齐 DSH 原生主题（`dsw-alias` 变量 + 局部设计令牌，浅/深色自动适配），并完成路线图 Phase 6 遗留功能项。

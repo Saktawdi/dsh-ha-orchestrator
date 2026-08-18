@@ -1,10 +1,10 @@
 ![HA Orchestrator — model recovery and multi-agent orchestration](docs/hero-banner.png)
 
 <p align="center">
-  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.0-4d6bfe?style=flat-square" alt="Version" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.1-4d6bfe?style=flat-square" alt="Version" height="20"></a>
   <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="Platform" height="20"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License: MIT" height="20"></a>
-  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-204%20passing-2ea44f?style=flat-square" alt="Tests" height="20"></a>
+  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-219%20passing-2ea44f?style=flat-square" alt="Tests" height="20"></a>
   <a href="docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="Orchestration modes" height="20"></a>
   <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin" height="20"></a>
 </p>
@@ -159,9 +159,10 @@ The plugin also registers two optional slash commands for inspecting and managin
 | `/ha reset` | Clear quarantine, failure counts, cursors, and history. |
 | `/ha probe <provider> <model>` | Manually probe a model to verify recovery. |
 | `/orchestrate` | List recent orchestrate runs (same as `/orchestrate runs`). |
-| `/orchestrate runs` | List the 10 most recent orchestrate runs. |
+| `/orchestrate runs` | List the 24 most recent orchestrate runs (each with a one-line result summary). |
 | `/orchestrate show <runId>` | Show details of a specific orchestrate run. |
 | `/orchestrate presets` | List configured orchestration presets. |
+| `/ha-orch-resume <runId>` | Resume an incomplete orchestration run by runId: reuses completed subtasks and runs only the rest. |
 
 > These commands are registered through the DSH `commands` service. If a deployment does not provide that service, the plugin still works normally; only these slash commands are unavailable.
 
@@ -176,8 +177,8 @@ An **overview banner** at the top shows HA status, the current default model, th
 | Card | What you can do |
 | :-- | :-- |
 | Model High Availability | On/off, backup list (structured rows with inline dropdown editing, "Recommended backups", and an empty-state guide), and an "Advanced" section for cooldown, failure threshold, burst window, provider circuit threshold, probe recovery, context-overflow degrade, error-code filter, persist selection, and stop steering |
-| Subagent Orchestration | On/off, provider, default concurrency (6), max subagents per run (16), global concurrency cap, pipeline retry, merge/render limits, and delegation-depth limit — grouped into Basics / Concurrency & budgets / Advanced |
-| Custom Subagents | Add, edit, reorder, delete (avatar + model/effort badges); built-in reviewer/researcher/research-merger definitions; "AI Generate" creates one from a description; tool allow/deny lists and per-role fallback chains that handle start failures and child model errors without reading the global HA backup list |
+| Subagent Orchestration | On/off, provider, default concurrency (6), max subagents per run (16), global concurrency cap, pipeline retry, merge/render limits, delegation-depth limit, and subagent output-token limit — grouped into Basics / Concurrency & budgets / Advanced |
+| Custom Subagents | Add, edit, reorder, delete (avatar + model/effort badges); built-in reviewer/researcher/research-merger definitions; "AI Generate" creates one from a description; tool allow/deny lists, per-role output-token limits, and per-role fallback chains that handle start failures and child model errors without reading the global HA backup list |
 | Diagnostics | HA runtime (current default, quarantine with level and cooldown countdown, failure counts, cursors, probes, failover history, reset) and **expandable recent runs** (mode badge, duration, per-subtask status table with lastKey, result summary — history survives restarts) |
 | System | Plugin language (follow system / Chinese / English), the orchestration hint toggle, the live injection status, one-click config export/import, and the debug card toggle |
 

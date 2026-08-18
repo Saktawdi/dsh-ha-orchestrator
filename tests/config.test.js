@@ -18,7 +18,7 @@ test('defaultConfig 深层结构正确', () => {
   assert.equal(defaultConfig.ha.enabled, true)
   assert.deepEqual(defaultConfig.ha.backups, [])
   assert.equal(defaultConfig.ha.cooldownMs, 300000)
-  assert.equal(defaultConfig.ha.threshold, 1)
+  assert.equal(defaultConfig.ha.threshold, 3)
   assert.deepEqual(defaultConfig.ha.codes, [])
   assert.equal(defaultConfig.ha.persistSelection, false)
   assert.equal(defaultConfig.ha.steerOnStop, true)

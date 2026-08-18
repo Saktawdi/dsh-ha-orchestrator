@@ -1,10 +1,10 @@
 ![HA Orchestrator —— 模型故障恢复与多智能体编排](docs/hero-banner.png)
 
 <p align="center">
-  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.0-4d6bfe?style=flat-square" alt="版本" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.1-4d6bfe?style=flat-square" alt="版本" height="20"></a>
   <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="平台" height="20"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="许可证 MIT" height="20"></a>
-  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-204%20passing-2ea44f?style=flat-square" alt="测试" height="20"></a>
+  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-219%20passing-2ea44f?style=flat-square" alt="测试" height="20"></a>
   <a href="docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="编排模式" height="20"></a>
   <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin" height="20"></a>
 </p>
@@ -156,9 +156,10 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 | `/ha reset` | 清空隔离、失败计数、游标与历史。 |
 | `/ha probe <provider> <model>` | 手动探测指定模型，验证恢复。 |
 | `/orchestrate` | 列出最近编排运行（等同 `/orchestrate runs`）。 |
-| `/orchestrate runs` | 列出最近 10 次编排运行。 |
+| `/orchestrate runs` | 列出最近 24 次编排运行（每条附一行结果摘要）。 |
 | `/orchestrate show <runId>` | 查看某次编排运行的详情。 |
 | `/orchestrate presets` | 列出已配置的编排配方。 |
+| `/ha-orch-resume <runId>` | 按 runId 恢复未完成的编排运行：复用历史已完成子任务，只跑剩余部分。 |
 
 > 这些命令通过 DSH 的 `commands` 服务注册。如果部署环境没有该服务，插件仍可正常使用，只是这些斜杠命令不可用。
 
@@ -173,8 +174,8 @@ HA Orchestrator 是 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh
 | 卡片 | 作用 |
 | :-- | :-- |
 | 模型高可用 | 开关、备用模型列表（结构化行 + 行内编辑下拉；含「推荐备份」与空状态引导）、「高级设置」：冷却时间、失败阈值、突发窗口、Provider 熔断阈值、探测恢复、上下文超长降级、错误码过滤、持久化选择、停止后引导 |
-| 子智能体编排 | 开关、子智能体提供方、默认并发数（6）、单次任务子智能体上限（16）、全局并发上限、流水线阶段重试、合并/渲染截断、委托深度上限（按「基本 / 并发与预算 / 高级」分组） |
-| 自定义子智能体 | 增删改、排序（首字母头像 + 模型/effort 徽章）；内置 reviewer/researcher/research-merger；「智能新增」用 AI 生成；支持工具白名单/黑名单与独立回退链 |
+| 子智能体编排 | 开关、子智能体提供方、默认并发数（6）、单次任务子智能体上限（16）、全局并发上限、流水线阶段重试、合并/渲染截断、委托深度上限、子智能体输出 token 上限（按「基本 / 并发与预算 / 高级」分组） |
+| 自定义子智能体 | 增删改、排序（首字母头像 + 模型/effort 徽章）；内置 reviewer/researcher/research-merger；「智能新增」用 AI 生成；支持工具白名单/黑名单、每角色输出 token 上限与独立回退链 |
 | 诊断 | HA 运行态（当前默认模型、隔离含层级与冷却倒计时、失败计数、游标、探测、切换历史、清除隔离与历史）与**可展开的最近运行**（模式徽章、耗时、子任务状态表、lastKey 与结果摘要；重启后仍可见历史） |
 | 系统 | 插件语言（跟随系统 / 中文 / English）、编排引导开关、注入状态、一键导出/导入配置、调试卡片开关 |
 

@@ -331,7 +331,7 @@ test('回归：stateGet/haStatus/orchRuns 结果始终通过 JSON 边界校验�
   await rpc.stateSet({ patch: { ctx: { text: '' } } })
 
   // 2) 触发 HA 隔离与切换历史（quarantine/history 进入快照）
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
   const seed = { provider: 'p0', model: 'm0' }
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(seed))
   await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'RATE_LIMIT' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
@@ -355,7 +355,7 @@ test('HA 事件流：直通 -> 失败隔离 -> 请求切换备用', async () => 
   const rpc = ctx.get('haOrchestrator')
 
   // 配置备用模型（会清空隔离/失败计数）
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
 
   // 1) 健康请求直通，记录 lastKey
   const seed = { provider: 'p0', model: 'm0' }
@@ -386,7 +386,7 @@ test('HA 事件流：重试预算耗尽后放行原模型', async () => {
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
 
   const signal = new AbortController().signal
   const emitError = () => ctx.waterfall('agent/request-error', {
@@ -404,7 +404,7 @@ test('HA 停止兜底：agent/error 隔离失败模型并延迟 steer', async ()
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
 
   // 先走一次请求建立 lastKey
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
@@ -427,7 +427,7 @@ test('回归：agent/error 停止兜底尊重 cfg.codes（收窄过滤后不隔�
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
   // 用户收窄错误码过滤：只对 RATE_LIMIT 反应；SERVER 不在名单
-  await rpc.stateSet({ patch: { ha: { codes: ['RATE_LIMIT'], backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, codes: ['RATE_LIMIT'], backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
 
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await ctx.emit('agent/error', { agent: fakeAgent, turn: 1, step: 0, error: { failure: { code: 'SERVER' } } })
@@ -699,7 +699,7 @@ test('haReset：清空隔离/失败/历史', async () => {
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
 
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
@@ -731,7 +731,7 @@ test('Phase1 类型化事件：failover / circuit-opened 发出', async () => {
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
 
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'RATE_LIMIT' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
@@ -753,7 +753,7 @@ test('Phase1 不可重试错误：直接隔离并切换，不消耗阈值计数'
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
 
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   const action = await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'INVALID_CREDENTIAL' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
@@ -770,7 +770,7 @@ test('Phase1 CONTEXT_WINDOW_EXCEEDED 降级：去掉 reasoningEffort 重试原�
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], degradeContextWindow: true } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], degradeContextWindow: true } } })
 
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   const action = await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'CONTEXT_WINDOW_EXCEEDED' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
@@ -787,7 +787,7 @@ test('Phase1 CONTEXT_WINDOW_EXCEEDED 未开启降级：放行给平台，不切�
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], degradeContextWindow: false } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], degradeContextWindow: false } } })
 
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   const action = await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'CONTEXT_WINDOW_EXCEEDED' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
@@ -807,7 +807,7 @@ test('Phase1 CONTEXT_WINDOW_EXCEEDED 停止兜底：不隔离/不 steer 切备�
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], steerOnStop: true } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], steerOnStop: true } } })
 
   // 先走一次请求建立 lastKey
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
@@ -826,7 +826,7 @@ test('Phase1 provider 级熔断：模型阈值触发后整个 provider 不可用
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [
     { label: 'p0m9', provider: 'p0', model: 'm9' },
     { label: 'p1m1', provider: 'p1', model: 'm1' },
   ], providerThreshold: 1 } } })
@@ -851,7 +851,7 @@ test('Phase1 探测恢复：冷却到期探测通过 -> 解除隔离（circuit-c
   const { ctx, fakeAgent } = makeEnv()
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], cooldownMs: 1000, probeEnabled: true } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], cooldownMs: 1000, probeEnabled: true } } })
 
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
@@ -873,7 +873,7 @@ test('Phase1 探测失败：隔离延长并记录失败（probeLog）', async ()
   state.probeMode = 'fail'
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
 
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'SERVER' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
@@ -907,7 +907,7 @@ test('Phase1 /ha 命令：注册与 status/reset/probe', async () => {
   assert.ok(res.text.indexOf('HA 状态') >= 0 || res.text.indexOf('HA status') >= 0)
 
   // 制造一次隔离后 status 可见
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
   const statusText = await def.handler({ input: 'status' })
@@ -931,7 +931,7 @@ test('Phase1 HA 运行态持久化：重启恢复隔离/游标/历史', async ()
   await mountPlugin(envA.ctx)
   const rpcA = envA.ctx.get('haOrchestrator')
 
-  await rpcA.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpcA.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
   await envA.ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await envA.ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'RATE_LIMIT' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
   await envA.ctx.waterfall('agent/request', { turn: 2, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
@@ -1079,6 +1079,55 @@ test('Phase2 自动续跑：重试相同任务时复用部分完成的 run，只
   assert.equal(runs[0].resumedFrom, res1.runId)
 })
 
+test('Phase2 自动续跑：不同会话的同任务部分完成 run 不会被误复用', async () => {
+  const { ctx, state } = makeEnv()
+  await mountPlugin(ctx)
+
+  // 会话 b1 先跑出一份部分完成的 run（t1 完成，t2 失败）
+  state.subagentResultFailures.set('t2', 1)
+  await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'P1' }, { id: 't2', prompt: 'P2' }],
+  }, { id: 'b1' })
+  const callsAfterB = ctx.subagentCalls.length
+
+  // 会话 a1 重试相同任务：不能复用 b1 的已完成结果，必须全量执行
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'P1' }, { id: 't2', prompt: 'P2' }],
+  }, { id: 'a1' })
+  assert.equal(ctx.subagentCalls.length - callsAfterB, 2, 'a1 的调用不应复用 b1 的 run')
+  assert.deepEqual(res.runs.map((r) => r.id), ['t1', 't2'])
+  assert.deepEqual(res.runs.map((r) => r.status), ['completed', 'completed'])
+})
+
+test('Phase2 自动续跑：最新同任务 run 已完成时，不向更旧的部分完成 run 回退', async () => {
+  const { ctx, state } = makeEnv()
+  await mountPlugin(ctx)
+
+  // 第一轮：t1 完成，t2 失败（旧的部分完成 run）
+  state.subagentResultFailures.set('t2', 1)
+  await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'P1' }, { id: 't2', prompt: 'P2' }],
+  }, { id: 'a1' })
+
+  // 第二轮：相同任务全部完成（最新的完整 run，已覆盖旧结果）
+  await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'P1' }, { id: 't2', prompt: 'P2' }],
+  }, { id: 'a1' })
+  const callsBeforeThird = ctx.subagentCalls.length
+
+  // 第三轮：再跑相同任务。最新 run 已完成，不应复活第一轮的 t1 旧结果，应全量重跑。
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'P1' }, { id: 't2', prompt: 'P2' }],
+  }, { id: 'a1' })
+  assert.equal(ctx.subagentCalls.length - callsBeforeThird, 2, '最新 run 已完成后应全量重跑，不向旧 run 回退')
+  assert.deepEqual(res.runs.map((r) => r.status), ['completed', 'completed'])
+})
+
 test('Phase2 部分完成失败：错误信息包含 runId 与 resume 提示（模型重试可显式复用）', async () => {
   const { ctx } = makeEnv()
   await mountPlugin(ctx)
@@ -1217,6 +1266,42 @@ test('Phase2 /orchestrate 命令：runs 列表与 show 详情', async () => {
   // 未知 runId
   const missing = await def.handler({ input: 'show r-none' })
   assert.equal(missing.kind, 'error')
+})
+
+test('Phase2 /ha-orch-resume 命令：按 runId 恢复未完成子任务', async () => {
+  const { ctx, state, fakeAgent } = makeEnv()
+  await mountPlugin(ctx)
+
+  // 先制造一个部分完成的 run：t1 完成，t2 失败
+  state.subagentResultFailures.set('t2', 1)
+  await toolExec(ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 't1', prompt: 'a' }, { id: 't2', prompt: 'b' }] }, { id: 'a1' })
+
+  const rpc = ctx.get('haOrchestrator')
+  const before = await rpc.orchRuns()
+  assert.equal(before.runs.length, 1)
+  const prevRunId = before.runs[0].runId
+  assert.equal(before.runs[0].runs.find((r) => r.id === 't1').status, 'completed')
+  assert.equal(before.runs[0].runs.find((r) => r.id === 't2').status, 'error')
+
+  // 用户主动调用 /ha-orch-resume <runId>：只重跑未完成子任务
+  state.subagentResultFailures.delete('t2')
+  const def = ctx.commandDefs.find((d) => d.name === 'ha-orch-resume')
+  assert.ok(def, '/ha-orch-resume 命令已注册')
+  const resumeRes = await def.handler({ rawInput: ' ' + prevRunId, agent: fakeAgent, signal: new AbortController().signal })
+  assert.equal(resumeRes.kind, 'success')
+  assert.ok(resumeRes.text.indexOf(prevRunId) >= 0, '结果回显原 runId')
+
+  const after = await rpc.orchRuns()
+  assert.equal(after.runs.length, 2)
+  const newRun = after.runs[0]
+  assert.equal(newRun.resumedFrom, prevRunId)
+  assert.equal(newRun.runs.find((r) => r.id === 't1').status, 'completed', '已完成任务被复用')
+  assert.equal(newRun.runs.find((r) => r.id === 't2').status, 'completed', '只重跑未完成任务')
+
+  const t2Starts = ctx.subagentCalls.filter((c) => c.request.label === 't2')
+  assert.equal(t2Starts.length, 2, 't2 共启动两次（首次失败 + resume 重跑），t1 只启动一次')
+  const t1Starts = ctx.subagentCalls.filter((c) => c.request.label === 't1')
+  assert.equal(t1Starts.length, 1, 't1 在 resume 时复用完成结果，不重复启动')
 })
 
 test('Phase2 失败留痕：未知 agent 报错也生成 run 记录', async () => {
@@ -1664,7 +1749,7 @@ test('H3 haReset 后重启不恢复旧状态', async () => {
   await mountPlugin(envA.ctx)
   const rpcA = envA.ctx.get('haOrchestrator')
 
-  await rpcA.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  await rpcA.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
   await envA.ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: envA.fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await envA.ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: envA.fakeAgent }, () => Promise.resolve(undefined))
   await new Promise((resolve) => setTimeout(resolve, 400))
@@ -1774,7 +1859,7 @@ test('M3 无 timer 时探测调度不爆栈', async () => {
   await mountPlugin(ctx)
   const rpc = ctx.get('haOrchestrator')
 
-  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], probeEnabled: true, cooldownMs: 60000 } } })
+  await rpc.stateSet({ patch: { ha: { threshold: 1, backups: [{ label: 'b1', provider: 'p1', model: 'm1' }], probeEnabled: true, cooldownMs: 60000 } } })
   await ctx.waterfall('agent/request', { turn: 1, step: 0, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve({ provider: 'p0', model: 'm0' }))
   await ctx.waterfall('agent/request-error', { turn: 1, step: 0, provider: 'p0', failure: { code: 'QUOTA' }, signal: new AbortController().signal, agent: fakeAgent }, () => Promise.resolve(undefined))
   const status = await rpc.haStatus()

@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import { parseDictModule, resolveTarget, pickDict, makeT, translate } from './language.js'
 import type { Dict, TargetLang, TFunc } from './language.js'
 import { defaultConfig, sanitizeConfig } from './config.js'
@@ -63,6 +63,7 @@ import {
   summarizeRuns,
   truncateTasks,
   sameTaskList,
+  isUsableRunStatus,
 } from './orch-runner.js'
 import type { RunResultLike, TaskLike, AgentDefLike, OrchestrateMode } from './orch-runner.js'
 import { decorateRemoteMethod, runInitializers } from './remote.js'
@@ -1400,7 +1401,7 @@ async function apply(ctx: Context): Promise<void> {
       upsertActiveTask(runId, taskId, { label: runLabel, agent: agentName, status: 'running', lastKey: '' })
       emitOrchEvent('orch/task-status', { runId, taskId, label: runLabel, status: 'running', at: at() })
     }
-    const request = buildSubagentRequest(task, extra, agentDef, t('orch.mergedPrefix'), parent, signal)
+    const request = buildSubagentRequest(task, extra, agentDef, t('orch.mergedPrefix'), parent, signal, Number(state.config.orch.maxTokens) || 0)
     // 平台能力门控：toolFilter/outputSchema/maxDepth 任一存在且 provider 声明不支持时必须剥离，
     // 否则服务层 start 前校验会拒绝整个子任务。maxDepth 为编排级配置（orch.maxDepth > 0 时下发）。
     const cfgMaxDepth = Math.max(0, Number(state.config.orch.maxDepth) || 0)
@@ -1676,7 +1677,8 @@ async function apply(ctx: Context): Promise<void> {
           const applyResumeRecord = (prevRec: RunRecord): RunRecord => {
             resumedFrom = prevRec.runId
             resumePrevRec = prevRec
-            resumeCompleted = prevRec.runs.filter((r) => r.status === 'completed')
+            // max-tokens 也视为有可用输出：复用其部分结果，避免合并不了/重跑损失已有输出
+            resumeCompleted = prevRec.runs.filter((r) => isUsableRunStatus(r.status))
             const completed = new Set(resumeCompleted.map((r) => r.id))
             if (mode === 'pipeline') {
               // 流水线：从未完成阶段续跑，carry 拼接已完成输出
@@ -1688,7 +1690,16 @@ async function apply(ctx: Context): Promise<void> {
                 throw new Error(t('orch.errNoResumeData', { runId: prevRec.runId }))
               }
             } else {
-              runTasks = tasks.filter((tk) => !completed.has(tk.id || tk.label || 'task'))
+              // 显式 resume 可能只传 runId（例如 /ha-orch-resume <runId>）而不带 tasks：
+              // 此时以历史记录的完整任务序列为基准，过滤出未完成子任务。
+              const resumeBase = tasks.length > 0
+                ? tasks
+                : prevRec.tasks.map((tk) => ({ id: tk.id, label: tk.label, agent: tk.agent, prompt: tk.prompt }))
+              runTasks = resumeBase.filter((tk) => !completed.has(tk.id || tk.label || 'task'))
+              // 兼容旧记录（tasks 无 prompt）：无法恢复则报错，而不是把缺 prompt 的任务送进执行器
+              if (runTasks.length > 0 && !runTasks.some((tk) => tk.prompt)) {
+                throw new Error(t('orch.errNoResumeData', { runId: prevRec.runId }))
+              }
             }
             if (runTasks.length === 0) throw new Error(t('orch.errRunDone', { runId: prevRec.runId }))
             return prevRec
@@ -1705,7 +1716,10 @@ async function apply(ctx: Context): Promise<void> {
             // 命中则复用其已完成子任务，只跑剩余部分——避免“4/6 已完成，重试又全量重做”。
             const sessionId = String(exec.agent.id || '')
             const tNow = now()
-            const candidate = (await mergedRunRecords()).find((rec) => {
+            // 先锁定“最新一条”同会话/同模式/同任务且执行角色一致的 run；只有这条
+            // 最新 run 本身是部分完成时才自动续跑。若它已完成或全失败，不再向更旧的
+            // 部分完成 run 回退——避免“新 run 已覆盖，却复活旧 run 结果”的覆盖问题。
+            const latestMatching = (await mergedRunRecords()).find((rec) => {
               if (!rec || rec.runId === runId) return false
               if (String(rec.agent || '') !== sessionId) return false
               if (rec.mode !== mode) return false
@@ -1713,20 +1727,20 @@ async function apply(ctx: Context): Promise<void> {
               if (!Number.isFinite(started) || tNow - started > AUTO_RESUME_WINDOW_MS) return false
               if (!sameTaskList(rec.tasks, tasks)) return false
               // 任务定义匹配后，再比对“实际执行角色”：防止同名任务换了 agent 却被复用旧结果
-              const agentMatch = tasks.every((tk, i) => {
+              return tasks.every((tk, i) => {
                 const prev = rec.tasks[i]
                 if (!prev) return false
                 return String((defFor(tk) || {}).name || '') === String(prev.agent || '')
               })
-              if (!agentMatch) return false
-              const completedIds = new Set(rec.runs.filter((r) => r.status === 'completed').map((r) => String(r.id || '')))
-              const completedCount = tasks.filter((tk) => completedIds.has(String(tk.id || tk.label || 'task'))).length
-              return completedCount > 0 && completedCount < tasks.length
             })
-            if (candidate) {
-              resumePrevRecForCatch = applyResumeRecord(candidate)
-              resumePrevRec = resumePrevRecForCatch
-              debugLog('info', 'orch.autoresume', '自动复用部分完成的 run', { from: resumedFrom, pending: runTasks.length, completed: resumeCompleted.length })
+            if (latestMatching) {
+              const completedIds = new Set(latestMatching.runs.filter((r) => isUsableRunStatus(r.status)).map((r) => String(r.id || '')))
+              const completedCount = tasks.filter((tk) => completedIds.has(String(tk.id || tk.label || 'task'))).length
+              if (completedCount > 0 && completedCount < tasks.length) {
+                resumePrevRecForCatch = applyResumeRecord(latestMatching)
+                resumePrevRec = resumePrevRecForCatch
+                debugLog('info', 'orch.autoresume', '自动复用部分完成的 run', { from: resumedFrom, pending: runTasks.length, completed: resumeCompleted.length })
+              }
             }
           }
           attemptedTasks = runTasks.map((tk) => ({ id: String(tk.id || ''), label: String(tk.label || ''), agent: (defFor(tk) || {}).name || '', prompt: String(tk.prompt || '') }))
@@ -1919,7 +1933,7 @@ async function apply(ctx: Context): Promise<void> {
           let failedRuns = normalizeFinalRuns(runs)
           if (resumePrevRecForCatch) {
             const byId = new Map<string, RunResultLike>()
-            for (const r of resumePrevRecForCatch.runs.filter((r) => r.status === 'completed')) byId.set(r.id, r)
+            for (const r of resumePrevRecForCatch.runs.filter((r) => isUsableRunStatus(r.status))) byId.set(r.id, r)
             for (const r of failedRuns) byId.set(r.id, r)
             const ordered: RunResultLike[] = []
             for (const tk of resumePrevRecForCatch.tasks) {
@@ -1950,7 +1964,7 @@ async function apply(ctx: Context): Promise<void> {
           const leafTaskRunId = (tk: { id: string; label: string }): string => String(tk.id || tk.label || 'task')
           const completedLeaf = failedTasks.filter((tk) => {
             const r = failedRec.runs.find((x) => x.id === leafTaskRunId(tk))
-            return !!r && r.status === 'completed'
+            return !!r && isUsableRunStatus(r.status)
           })
           if (completedLeaf.length > 0 && completedLeaf.length < failedTasks.length) {
             const hint = t('orch.errPartialHint', {
@@ -2038,10 +2052,15 @@ async function apply(ctx: Context): Promise<void> {
   // Cordis 管理行生命周期 —— 卸载/更新时自动 dispose，不会有残留注册（zombie）。
   // orchestrate：自动编排；list-subagents：按需查询可用自定义子智能体清单。
   let toolDisposes: Array<() => void> = []
+  // 当前注册的 orchestrate 工具定义：/ha-orch-resume 命令直接调用其 execute，
+  // 与模型调用走完全相同的执行/留痕/事件/预算语义（含 resume 复用已完成子任务）。
+  let orchestrateToolDef: ReturnType<typeof defineTool> | null = null
   function installTools(): void {
     for (const d of toolDisposes) { try { d() } catch (e) { /* ignore */ } }
+    const orchTool = buildOrchestrateTool()
+    orchestrateToolDef = orchTool
     toolDisposes = [
-      ctx.tools.register(buildOrchestrateTool()),
+      ctx.tools.register(orchTool),
       ctx.tools.register(buildListSubagentsTool()),
     ]
     orchestrateReady = true
@@ -2053,6 +2072,16 @@ async function apply(ctx: Context): Promise<void> {
   // 配置页改了自定义子智能体列表 / 语言切换后重建工具（description 含最新清单与当前语言）
   function reinstallTools(): void {
     installTools()
+  }
+  // 命令路径复用 orchestrate 工具的执行体：用户 /ha-orch-resume <runId> 时，
+  // 不经过模型工具路由，直接以命令接收方的 agent/signal 触发一次 resume 执行。
+  type OrchestrateToolLike = {
+    execute?: (args: Record<string, unknown>, exec: { agent: unknown; signal: AbortSignal; callId?: string }) => Promise<{ summary: string; runs: RunResultLike[]; runId: string }>
+  }
+  async function runOrchestrateFromCommand(args: Record<string, unknown>, agent: unknown, signal: AbortSignal): Promise<{ summary: string; runs: RunResultLike[]; runId: string }> {
+    const tool = orchestrateToolDef as unknown as OrchestrateToolLike | null
+    if (!tool || typeof tool.execute !== 'function') throw new Error(t('orch.errNoService'))
+    return tool.execute(args, { agent, signal })
   }
 
   // ================= 上下文注入（systemPrompt 段落） =================
@@ -2246,9 +2275,14 @@ async function apply(ctx: Context): Promise<void> {
     lines.push(t('diag.injection') + ': ' + (injectionStatus.registered ? t('diag.yes') : t('diag.no') + (injectionStatus.reason ? ' (' + injectionStatus.reason + ')' : '')))
     return lines.join('\n')
   }
+  // dsh-commands 真实调用载荷的输入字段为 rawInput（含分隔空白）；旧测试/宿主可能传 input。
+  function commandInput(invocation: CommandInvocationLike | undefined | null): string {
+    const raw = invocation && (invocation.rawInput !== undefined ? invocation.rawInput : invocation.input)
+    return String(raw || '')
+  }
   async function handleHaCommand(invocation: CommandInvocationLike): Promise<{ kind: 'success' | 'error'; text: string }> {
     try {
-      const rest = String((invocation && invocation.input) || '').trim()
+      const rest = commandInput(invocation).trim()
       const parts = rest.split(/\s+/).filter(Boolean)
       const verb = (parts[0] || 'status').toLowerCase()
       if (verb === 'reset' || verb === 'clear') {
@@ -2359,7 +2393,7 @@ async function apply(ctx: Context): Promise<void> {
   }
   async function handleOrchCommand(invocation: CommandInvocationLike): Promise<{ kind: 'success' | 'error'; text: string }> {
     try {
-      const parts = String((invocation && invocation.input) || '').trim().split(/\s+/).filter(Boolean)
+      const parts = commandInput(invocation).trim().split(/\s+/).filter(Boolean)
       const verb = (parts[0] || 'runs').toLowerCase()
       // 合并内存与磁盘：磁盘不可用或尚未落盘时，命令仍能看到内存中的 run
       const all = await mergedRunRecords()
@@ -2389,12 +2423,14 @@ async function apply(ctx: Context): Promise<void> {
         lines.push('---\n' + String(rec.summary || '').slice(0, 2000))
         return { kind: 'success', text: lines.join('\n') }
       }
-      // runs：最近 10 条
+      // runs：最近 24 条，附带一行结果摘要（快速定位编排 id 与结果）
+      const RUNS_CMD_CAP = 24
       if (all.length === 0) return { kind: 'success', text: t('orch.runNone') }
-      const lines = [t('orch.runsHead', { n: Math.min(all.length, 10) })]
-      for (const r of all.slice(0, 10)) {
-        const ok = r.runs.every((x) => x.status !== 'error')
-        lines.push('- ' + r.runId + ' [' + r.mode + (r.aborted ? ',aborted' : '') + '] ' + r.startedAt.slice(0, 19).replace('T', ' ') + ' ' + r.runs.length + ' tasks ' + (ok ? 'ok' : 'has-errors'))
+      const lines = [t('orch.runsHead', { n: Math.min(all.length, RUNS_CMD_CAP) })]
+      for (const r of all.slice(0, RUNS_CMD_CAP)) {
+        const ok = r.runs.every((x) => isUsableRunStatus(x.status))
+        const result = String(r.summary || '').replace(/\s+/g, ' ').trim()
+        lines.push('- ' + r.runId + ' [' + r.mode + (r.aborted ? ',aborted' : '') + '] ' + r.startedAt.slice(0, 19).replace('T', ' ') + ' ' + r.runs.length + ' tasks ' + (ok ? 'ok' : 'has-errors') + (result ? '\n  ' + t('orch.result') + ': ' + result.slice(0, 120) : ''))
       }
       return { kind: 'success', text: lines.join('\n') }
     } catch (e) {
@@ -2404,6 +2440,125 @@ async function apply(ctx: Context): Promise<void> {
   installOrchCommand()
   ctx.effect(() => () => {
     try { if (orchCommandDispose) orchCommandDispose() } catch (e) { /* ignore */ }
+  })
+
+  // ================= /ha-orch-resume 命令（显式恢复未完成 run） =================
+  // 用户主动调用 /ha-orch-resume <runId>：命令直接以当前 agent 身份执行一次 resume，
+  // 复用历史 run 的已完成子任务，只跑剩余部分，降低重试成本。
+  let resumeCommandDispose: (() => void) | null = null
+  let resumeCommandRetries = 0
+  const RESUME_COMMAND_MAX_RETRIES = 30
+  function installResumeCommand(): void {
+    try { if (resumeCommandDispose) { resumeCommandDispose(); resumeCommandDispose = null } } catch (e) { /* ignore */ }
+    const commands = getService<CommandsService>(ctx, 'commands')
+    if (!commands || typeof commands.register !== 'function') {
+      console.warn('[ha] /ha-orch-resume command: commands service unavailable (attempt ' + (resumeCommandRetries + 1) + '/30), retrying in 2s')
+      scheduleResumeCommandRetry()
+      return
+    }
+    try {
+      resumeCommandDispose = commands.register({
+        name: 'ha-orch-resume',
+        description: t('orch.resumeCmdDesc'),
+        input: { hint: '<runId>' },
+        handler: (invocation: CommandInvocationLike) => handleHaOrchResume(invocation),
+      })
+      resumeCommandRetries = 0
+      console.log('[ha] /ha-orch-resume command registered')
+    } catch (e) {
+      console.error('[ha] register /ha-orch-resume command failed', e)
+      scheduleResumeCommandRetry()
+    }
+  }
+  function scheduleResumeCommandRetry(): void {
+    if (resumeCommandRetries >= RESUME_COMMAND_MAX_RETRIES) return
+    resumeCommandRetries += 1
+    const timer = getService<TimerService>(ctx, 'timer')
+    if (!timer || typeof timer.timeout !== 'function') return
+    try { timer.timeout(() => installResumeCommand(), 2000) } catch (e) { /* ignore */ }
+  }
+  /**
+   * 把一次 resume run 的完整结构化结果注入接收命令的 Agent 上下文并主动唤醒一轮：
+   * 模型拿到全部子任务输出后可直接继续完成原任务（服务端确定性续跑），
+   * 不再依赖客户端把命令结果转成用户消息的旁路（该旁路内容会被截断且唤醒不可靠）。
+   * 注入失败不影响 resume 本身成功——命令仍返回正常回执，模型仍可从落盘文件读取。
+   */
+  function tryInjectResumeFollowup(
+    agent: unknown,
+    fromRunId: string,
+    resumed: { runId: string; mode: string; summary: string; runs: RunResultLike[] },
+  ): void {
+    try {
+      const a = agent as { followup?: (message: unknown) => unknown; id?: string } | null | undefined
+      if (!a || typeof a.followup !== 'function') {
+        debugLog('warn', 'orch.resume.followup', 'Agent 无 followup 能力，跳过结果注入', { hasAgent: !!a })
+        return
+      }
+      const oc = state.config.orch
+      const rendered = renderRunOutput(
+        { summary: String(resumed.summary || ''), runs: resumed.runs },
+        {
+          runOutputLimit: Number(oc.renderRunLimit) > 0 ? Number(oc.renderRunLimit) : undefined,
+          totalLimit: Number(oc.renderTotalLimit) > 0 ? Number(oc.renderTotalLimit) : undefined,
+        },
+      )
+      const renderText = rendered && rendered[0] && rendered[0].text ? rendered[0].text : ''
+      const text = t('orch.resumeInjected', {
+        from: fromRunId,
+        runId: String(resumed.runId || ''),
+        mode: String(resumed.mode || 'fanout'),
+        output: renderText,
+      })
+      const message = createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'plugin', plugin: 'dsh-ha-orchestrator' },
+      })
+      a.followup(message)
+      debugLog('info', 'orch.resume.followup', 'resume 完整结果已注入并唤醒 agent', {
+        from: fromRunId,
+        runId: String(resumed.runId || ''),
+        chars: text.length,
+        agent: String(a.id || ''),
+      })
+    } catch (e) {
+      // 注入失败不阻断命令主流程：留日志，模型仍可走落盘文件路径。
+      console.warn('[ha] inject resume followup failed', e)
+      debugLog('error', 'orch.resume.followup', 'resume 结果注入失败', { message: String((e && (e as Error).message) || e) })
+    }
+  }
+
+  async function handleHaOrchResume(invocation: CommandInvocationLike): Promise<{ kind: 'success' | 'error'; text: string }> {
+    try {
+      const parts = commandInput(invocation).trim().split(/\s+/).filter(Boolean)
+      const runId = parts[0] || ''
+      if (!runId) return { kind: 'error', text: t('orch.resumeUsage') }
+      const agent = invocation.agent
+      if (!agent) return { kind: 'error', text: t('orch.errNoAgentCtx') }
+      const signal = invocation.signal || new AbortController().signal
+      // 补一次配置加载：避免启动时服务未就绪/设置页未打开导致读到默认配置
+      await ensureConfigLoaded().catch(() => {})
+      // 预查一次历史记录，给出更早、更友好的错误；真实恢复仍由 orchestrate
+      // execute 内部的 resume 查找完成（保证同一份错误与记录语义）。
+      const prevRec = (await mergedRunRecords()).find((r) => r.runId === runId) || state.runs.find((r) => r.runId === runId)
+      if (!prevRec) return { kind: 'error', text: t('orch.errNoRun', { runId }) }
+      const res = await runOrchestrateFromCommand({ mode: prevRec.mode, resume: runId }, agent, signal)
+      // 服务端注入完整结果并唤醒下一轮，让模型直接继续完成原任务（用户无需再发"继续"）。
+      tryInjectResumeFollowup(agent, runId, { runId: res.runId, mode: prevRec.mode, summary: res.summary, runs: res.runs })
+      return {
+        kind: 'success',
+        text: t('orch.resumeDone', {
+          from: runId,
+          runId: res.runId,
+          summary: String(res.summary || '').slice(0, 600),
+        }),
+      }
+    } catch (e) {
+      return { kind: 'error', text: String((e && (e as Error).message) || e) }
+    }
+  }
+  installResumeCommand()
+  ctx.effect(() => () => {
+    try { if (resumeCommandDispose) resumeCommandDispose() } catch (e) { /* ignore */ }
   })
 
   // ================= 语言系统：运行期跟随 DSH =================

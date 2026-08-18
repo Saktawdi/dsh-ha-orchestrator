@@ -28,6 +28,8 @@ export interface AgentEntry {
   model: string
   /** 模型推理强度；留空 = 使用 provider/model 默认值。 */
   reasoningEffort?: string
+  /** 该子智能体每次请求的最大输出 token；0 = 用编排级 maxTokens 或继承父级。 */
+  maxTokens?: number
   description: string
   systemPrompt: string
   /** 工具裁剪（可选）：allow 白名单 / deny 黑名单，工具名以宿主全局注册为准；provider 不支持时自动剥离。 */
@@ -90,6 +92,8 @@ export interface OrchConfig {
   maxDepth: number
   /** 重试相同任务时自动复用最近一次部分完成的 run（同会话、同任务、30 分钟内）。 */
   autoResume: boolean
+  /** 子智能体每次请求的最大输出 token（0 = 继承父级/不覆盖；需要提高输出上限时再显式配置）。 */
+  maxTokens: number
 }
 
 /** 调试配置节。 */
@@ -130,7 +134,7 @@ export const defaultConfig: Config = {
     // 默认不预设备用模型：保持中立，由用户按实际环境配置
     backups: [],
     cooldownMs: 300000,
-    threshold: 1,
+    threshold: 3,
     codes: [],
     persistSelection: false,
     steerOnStop: true,
@@ -163,6 +167,9 @@ export const defaultConfig: Config = {
     maxDepth: 0,
     // 自动续跑：重试相同任务时复用最近一次部分完成 run 的已完成子任务（省钱省时）
     autoResume: true,
+    // 子智能体输出 token 上限默认 0 = 继承父级，不擅自改模型行为；如上一步修复仍频繁
+    // max-tokens，可显式配置为更大值（如 16000）或给单个子智能体设置 maxTokens 覆盖。
+    maxTokens: 0,
     agents: [
       {
         name: 'reviewer',
@@ -292,6 +299,7 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
       orch.renderTotalLimit = Math.max(0, Math.min(400000, Number(orch.renderTotalLimit) || 0))
       orch.maxDepth = Math.max(0, Math.min(8, Number(orch.maxDepth) || 0))
       orch.autoResume = asBool(orch.autoResume)
+      orch.maxTokens = Math.max(0, Math.min(128000, Number(orch.maxTokens) || 0))
       orch.presets = Array.isArray(orch.presets)
         ? (orch.presets as unknown as RawSection[]).filter((p): p is RawSection => !!p && typeof p === 'object' && !!String(p.name || '').trim())
           .map((p: RawSection) => ({
@@ -323,6 +331,8 @@ export function sanitizeConfig(patch: unknown, base?: Config | null): Partial<Co
             }
             const reasoningEffort = String(a.reasoningEffort || '').trim()
             if (reasoningEffort) entry.reasoningEffort = reasoningEffort
+            const maxTokens = Math.max(0, Number(a.maxTokens) || 0)
+            if (maxTokens > 0) entry.maxTokens = maxTokens
             const tools = asToolFilter(a.tools)
             if (tools) entry.tools = tools
             // fallbacks 与 ha.backups 使用同一条目形状，但存放在 AgentEntry

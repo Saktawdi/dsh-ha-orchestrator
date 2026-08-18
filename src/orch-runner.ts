@@ -27,6 +27,8 @@ export interface AgentDefLike {
   model?: string
   /** 模型推理强度；留空 = 使用 provider/model 默认值。 */
   reasoningEffort?: string
+  /** 该子智能体每次请求的最大输出 token；0/未设置 = 使用编排级 maxTokens 或继承父级。 */
+  maxTokens?: number
   systemPrompt?: string
   /** 工具裁剪（allow 白名单 / deny 黑名单）；调用方负责 provider 能力门控。 */
   tools?: { allow?: string[]; deny?: string[] }
@@ -48,7 +50,7 @@ export interface SubagentRequestLike {
   parent?: unknown
   signal?: AbortSignal
   persona?: string
-  agentOptions?: { provider?: string; model?: string; reasoningEffort?: string }
+  agentOptions?: { provider?: string; model?: string; reasoningEffort?: string; maxTokens?: number }
   /** 按子智能体裁剪工具（allow 白名单 / deny 黑名单）。 */
   toolFilter?: { allow?: string[]; deny?: string[] }
   /** 结构化输出 JSON Schema（object 根）。 */
@@ -255,6 +257,7 @@ export function buildSubagentRequest(
   mergedPrefix: string,
   parent: unknown,
   signal: AbortSignal | null | undefined,
+  defaultMaxTokens = 0,
 ): SubagentRequestLike {
   const label = task.label || (agentDef && agentDef.name) || task.id || 'task'
   const prompt = textBlocks(buildRunPrompt(task, extra, mergedPrefix))
@@ -262,11 +265,14 @@ export function buildSubagentRequest(
   if (signal) request.signal = signal
   if (agentDef && agentDef.systemPrompt) request.persona = agentDef.systemPrompt
   const effort = agentDef && String(agentDef.reasoningEffort || '').trim()
-  if (agentDef && (agentDef.provider || agentDef.model || effort)) {
-    const agentOptions: { provider?: string; model?: string; reasoningEffort?: string } = {}
-    if (agentDef.provider) agentOptions.provider = String(agentDef.provider)
-    if (agentDef.model) agentOptions.model = String(agentDef.model)
+  const agentMaxTokens = agentDef ? Math.max(0, Number(agentDef.maxTokens) || 0) : 0
+  const maxTokens = agentMaxTokens > 0 ? agentMaxTokens : Math.max(0, Number(defaultMaxTokens) || 0)
+  if (agentDef && (agentDef.provider || agentDef.model || effort) || maxTokens > 0) {
+    const agentOptions: { provider?: string; model?: string; reasoningEffort?: string; maxTokens?: number } = {}
+    if (agentDef && agentDef.provider) agentOptions.provider = String(agentDef.provider)
+    if (agentDef && agentDef.model) agentOptions.model = String(agentDef.model)
     if (effort) agentOptions.reasoningEffort = effort
+    if (maxTokens > 0) agentOptions.maxTokens = maxTokens
     request.agentOptions = agentOptions
   }
   // 工具裁剪透传：清洗后仍非空才带 toolFilter；provider 能力门控由调用方（index.ts runOne）负责。
@@ -278,6 +284,14 @@ export function buildSubagentRequest(
     request.outputSchema = schema
   }
   return request
+}
+
+// 可视为“有可用输出”的终止状态：
+// completed 正常完成；max-tokens 虽然截断，但已有输出应保留并纳入合并/复用，
+// 不应被当作 error 丢弃（用户实际场景常见子代理输出达到 token 上限）。
+export function isUsableRunStatus(status: unknown): boolean {
+  const s = String(status || '')
+  return s === 'completed' || s === 'max-tokens'
 }
 
 // 将提供方运行结果归一化为统一 run 结构。

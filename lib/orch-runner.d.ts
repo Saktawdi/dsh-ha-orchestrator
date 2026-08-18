@@ -21,6 +21,8 @@ export interface AgentDefLike {
     model?: string;
     /** 模型推理强度；留空 = 使用 provider/model 默认值。 */
     reasoningEffort?: string;
+    /** 该子智能体每次请求的最大输出 token；0/未设置 = 使用编排级 maxTokens 或继承父级。 */
+    maxTokens?: number;
     systemPrompt?: string;
     /** 工具裁剪（allow 白名单 / deny 黑名单）；调用方负责 provider 能力门控。 */
     tools?: {
@@ -52,6 +54,7 @@ export interface SubagentRequestLike {
         provider?: string;
         model?: string;
         reasoningEffort?: string;
+        maxTokens?: number;
     };
     /** 按子智能体裁剪工具（allow 白名单 / deny 黑名单）。 */
     toolFilter?: {
@@ -143,7 +146,8 @@ export declare function resolveConcurrency(argsConcurrency: number | null | unde
 export type OrchestrateMode = 'fanout' | 'pipeline' | 'supervisor' | 'map-reduce' | 'router';
 export declare function resolveMode(mode: string | null | undefined): OrchestrateMode;
 export declare function buildRunPrompt(task: TaskLike, extra: string | null | undefined, mergedPrefix: string): string;
-export declare function buildSubagentRequest(task: TaskLike, extra: string | null | undefined, agentDef: AgentDefLike | null | undefined, mergedPrefix: string, parent: unknown, signal: AbortSignal | null | undefined): SubagentRequestLike;
+export declare function buildSubagentRequest(task: TaskLike, extra: string | null | undefined, agentDef: AgentDefLike | null | undefined, mergedPrefix: string, parent: unknown, signal: AbortSignal | null | undefined, defaultMaxTokens?: number): SubagentRequestLike;
+export declare function isUsableRunStatus(status: unknown): boolean;
 export declare function normalizeRunResult(task: TaskLike, agentDef: AgentDefLike | null | undefined, res: SubagentResultLike): RunResultLike;
 export declare function normalizeFinalRuns(runs: RunResultLike[]): RunResultLike[];
 export declare function poolRun<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>, errorRun?: (item: T, error: unknown, index: number) => R): Promise<R[]>;

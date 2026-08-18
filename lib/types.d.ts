@@ -36,8 +36,14 @@ export interface LlmService {
 }
 /** 人类命令调用载荷（dsh-commands 最小形状）。 */
 export interface CommandInvocationLike {
-    /** 命令名后的原始输入文本。 */
+    /** 命令名后的原始输入文本（旧测试/部分宿主可能传 input）。 */
     input?: string;
+    /** dsh-commands 实际字段：命令名后的原始文本（包含分隔空白）。 */
+    rawInput?: string;
+    /** 接收命令的 Agent（/ha-orch-resume 直接以其身份恢复编排）。 */
+    agent?: unknown;
+    /** UI 请求取消信号；缺省时命令内部自建。 */
+    signal?: AbortSignal;
 }
 /** 命令服务（dsh-commands 最小形状）。 */
 export interface CommandsService {
@@ -72,11 +78,12 @@ export interface SubagentRequest {
     parent?: unknown;
     signal?: AbortSignal;
     persona?: string;
-    /** 子智能体模型选项；reasoningEffort 是 provider 定义的不透明 effort id。 */
+    /** 子智能体模型选项；reasoningEffort 是 provider 定义的不透明 effort id；maxTokens 限输出 token。 */
     agentOptions?: {
         provider?: string;
         model?: string;
         reasoningEffort?: string;
+        maxTokens?: number;
     };
     /** 按子智能体裁剪工具；provider 不支持（capabilities.toolFilter === false）时必须剥离，否则 start 被拒。 */
     toolFilter?: ToolFilterLike;
@@ -138,6 +145,8 @@ export interface AgentLike {
         };
     };
     steer(message: unknown): unknown;
+    /** 追加一条消息到下一轮并唤醒 agent（用于 resume 完成后的确定性续跑）。 */
+    followup?(message: unknown): unknown;
     runMaintenance<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T>;
 }
 /** agents 服务（registry 最小形状）。 */

@@ -26,21 +26,21 @@ node --test "tests/*.test.js" "tests/integration/*.test.js"
 测试运行在前一步 **`npm run build` 生成的 `lib/` 构建产物**上（各测试文件从
 `../lib/*.js` 导入），而非直接跑 `src/` 的 TypeScript 源码。
 
-### 单元测试（136 例）
+### 单元测试（143 例）
 
 | 文件 | 例数 | 覆盖对象（`lib/` 构建产物） | 主要覆盖点 |
 | :-- | :-: | :-- | :-- |
-| `tests/config.test.js` | 22 | `lib/config.js` | `MIN_COOLDOWN_MS` 常量、`defaultConfig` 深层结构、`sanitizeConfig` 逐条校验规则、工具裁剪/深度限制、未提交节沿用 base、入参不被修改 |
+| `tests/config.test.js` | 24 | `lib/config.js` | `MIN_COOLDOWN_MS` 常量、`defaultConfig` 深层结构、`sanitizeConfig` 逐条校验规则、工具裁剪/深度限制、`maxTokens` 钳制、未提交节沿用 base、入参不被修改 |
 | `tests/ha-core.test.js` | 25 | `lib/ha-core.js` | `keyOf`/`splitKey` 往返、`matchesCodes`、`clearExpired` 过期清理、`isExactQuarantined`/`isBlocked` 隔离判定、`bumpFailure` 失败计数、`quarantineKey` 隔离写入、`findFallback`/`pickFallback` 备用游标与跳过、`maxRetriesFor` 重试预算、`computeFailingKey`、`burstWindowMs` 窗口、provider 级通配隔离、`serialize/deserializeHaState` 往返 |
-| `tests/orch-runner.test.js` | 55 | `lib/orch-runner.js` | agent 查找与未知名、任务清洗/截断、并发与模式解析、prompt/request 构建、工具裁剪、结构化输出、结果归一化、`poolRun` 并发与异常、汇总/渲染截断、pipeline carry、supervisor prompt |
+| `tests/orch-runner.test.js` | 60 | `lib/orch-runner.js` | agent 查找与未知名、任务清洗/截断、并发与模式解析、prompt/request 构建、工具裁剪、结构化输出、`maxTokens` 透传、`isUsableRunStatus`、结果归一化、`poolRun` 并发与异常、汇总/渲染截断、pipeline carry、supervisor prompt |
 | `tests/language.test.js` | 24 | `lib/language.js` | `parseDictModule` 合法/非法/数组/BOM/空对象、`resolveTarget`、`pickDict` 回滚、`translate` 占位符、`makeT` 绑定字典 |
 | `tests/remote.test.js` | 10 | `lib/remote.js` | `decorateRemoteMethod` 的 context/export/access 传递、`Symbol.metadata` 存在性、`runInitializers` 延迟执行语义、描述符保持、完成后 `addInitializer` 抛错、多方法 exportName 与 initializer 顺序 |
 
-**单元测试合计 = 22 + 25 + 55 + 24 + 10 = 136 例。**
+**单元测试合计 = 24 + 25 + 60 + 24 + 10 = 143 例。**
 
-### 集成测试（68 例）
+### 集成测试（76 例）
 
-文件 `tests/integration/host.test.js`（68 例），以最小假 `ctx`（cordis 事件语义子集）
+文件 `tests/integration/host.test.js`（76 例），以最小假 `ctx`（cordis 事件语义子集）
 驱动真实插件 **`lib/index.js`** 构建产物。头部注释声明的覆盖范围（对应路线图
 Phase 0「HA 持久化恢复与事件流集成测试 / 编排 execute 集成」）包括：
 
@@ -61,9 +61,11 @@ Phase 0「HA 持久化恢复与事件流集成测试 / 编排 execute 集成」�
     map-reduce、router、配方（保存/列出/执行/删除）、resume、全局并发、预算、
     多评审者、实时活动 run、`stateExport`/`stateImport`、用户主动 skill。
 11. **当前 v0.12 调研能力** — 自定义子智能体工具裁剪、provider 能力门控、`outputHint` /
-    object-root `outputSchema`、`maxDepth`、内置调研 agent，以及 run 工件/并发写入的回归行为。
+    object-root `outputSchema`、`maxDepth`、`maxTokens` 透传、内置调研 agent，以及 run 工件/并发写入的回归行为。
+12. **resume 增强回归** — `/ha-orch-resume <runId>` 命令、`max-tokens` 视为可用输出（`isUsableRunStatus`）、
+    自动续跑只锁定最新匹配 run、显式 resume 无 tasks 时回退历史任务定义、命令 `rawInput`/`agent`/`signal` 载荷。
 
-**全量合计 = 136 单测 + 68 集成 = 204 例。**
+**全量合计 = 143 单测 + 76 集成 = 219 例。**
 
 ---
 
@@ -164,16 +166,16 @@ CI 不执行 `npm publish`；发布动作由后述发布流程人工/带环境�
    - `npm pack --dry-run` 已由 `verify` 预检以上关键文件。
 3. **打 tag + GitHub Release** — 提交版本（改版号应同步更新 CHANGELOG），打 `v<version>`
    tag 并推送，创建 GitHub Release（仓库 `Saktawdi/dsh-ha-orchestrator`）并附上步骤 2 的 `.tgz`。
-   > **当前环境状态**：`gh` CLI 未安装、`npm` 未登录账号，因此实际 Release 发布与
-   > 后续 `npm publish` 的远端动作**待环境就绪后再执行**；本步骤现仅完成本地验证与产物就绪。
-4. **npm publish** — 远端发布到 npm registry。`publishConfig.access = public`，公开可安装。
+   > 当前仓库已完成 v0.12.0 的 GitHub Release（`gh release create` 附 `.tgz`）。
+4. **npm publish** — 远端发布到 npm registry（`publishConfig.access = public`，公开可安装）。
+   当前仓库已完成 `dsh-ha-orchestrator@0.12.0` 的 npm 发布。
 
 ---
 
 ## 发布前后核对清单
 
 - [ ] `npm run prepublishOnly` 全绿（typecheck / build / check / test / verify 无一失败）。
-- [ ] `npm test` 全量 204 例通过（136 单测 + 68 集成）。
+- [ ] `npm test` 全量 219 例通过（143 单测 + 76 集成）。
 - [ ] `npm run verify` 输出 `[verify] 6 checks passed`。
 - [ ] `npm pack` 产物含 `lib/ src/ .language/ cordis.patch.yml docs/ README* CHANGELOG.md LICENSE`。
 - [ ] 版本号与 CHANGELOG 一致，`git tag v<version>` 已推送。

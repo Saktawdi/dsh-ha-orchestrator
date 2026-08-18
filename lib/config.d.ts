@@ -14,6 +14,8 @@ export interface AgentEntry {
     model: string;
     /** 模型推理强度；留空 = 使用 provider/model 默认值。 */
     reasoningEffort?: string;
+    /** 该子智能体每次请求的最大输出 token；0 = 用编排级 maxTokens 或继承父级。 */
+    maxTokens?: number;
     description: string;
     systemPrompt: string;
     /** 工具裁剪（可选）：allow 白名单 / deny 黑名单，工具名以宿主全局注册为准；provider 不支持时自动剥离。 */
@@ -81,6 +83,8 @@ export interface OrchConfig {
     maxDepth: number;
     /** 重试相同任务时自动复用最近一次部分完成的 run（同会话、同任务、30 分钟内）。 */
     autoResume: boolean;
+    /** 子智能体每次请求的最大输出 token（0 = 继承父级/不覆盖；需要提高输出上限时再显式配置）。 */
+    maxTokens: number;
 }
 /** 调试配置节。 */
 export interface DebugConfig {

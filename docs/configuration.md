@@ -70,7 +70,7 @@
 | `enabled` | boolean | `true` | `!!value` | HA 总开关。关闭后所有事件处理器直接放行，不做回退；同时探测（`runProbe`）也会因 `!cfg.enabled` 而被禁止。 |
 | `backups` | array | `[]` | 保留每项 `{label, provider, model, reasoningEffort}`；仅保留 `provider && model` 均非空的项 | 备用模型列表（按序轮换）。`agent/request` 处理器的前置条件是 `backups.length > 0`；故障后按序挑选备用模型。默认不预置任何备用模型（保持中立，由用户按环境配置）。 |
 | `cooldownMs` | number | `300000` | `Math.max(1000, …)`（不低于 `MIN_COOLDOWN_MS`） | 隔离冷却时长（毫秒）。模型被隔离后，冷却到期才允许恢复（配合探测）。探测失败后的再探测间隔也不短于该值（封顶 5 分钟）。 |
-| `threshold` | number | `1` | `Math.max(1, …)` | 失败阈值。`burstWindowMs` 窗口内失败计数达到该值才触发隔离并切备用；未达标则带退避重试原模型。 |
+| `threshold` | number | `3` | `Math.max(1, …)` | 失败阈值。`burstWindowMs` 窗口内失败计数达到该值才触发隔离并切备用；未达标则带退避重试原模型。 |
 | `codes` | array\<string> | `[]` | 非空字符串数组（`String` 化并过滤空串） | 回退错误码白名单。`agent/request-error` 中，仅当失败 `code` 命中 `codes` 才会进入 HA 处理；留空 = 所有错误码都触发回退。 |
 | `persistSelection` | boolean | `false` | `!!value` | 切换后是否把选中模型持久化为 DSH 默认模型（`agentDefaultModel.saveSelection`）。 |
 | `steerOnStop` | boolean | `true` | `!!value` | 模型错误中断（`agent/error`）后是否延迟到 driver idle 再 `steer` 用文案引导继续任务（`ha.steerText`）。仅对 `MODEL_CODES` 内的错误生效。 |
@@ -99,6 +99,7 @@
 | `renderTotalLimit` | number | `60000` | `0..400000` | 工具结果整体渲染字符上限；0 使用代码默认值。 |
 | `maxDepth` | number | `0` | `0..8` | 下发给支持该能力的 provider 的委托深度硬上限；0 关闭。插件仍会独立拒绝子智能体再次调用 `orchestrate`。 |
 | `autoResume` | boolean | `true` | `!!value` | 自动续跑。未显式传 `resume` 时，自动查找同一会话最近 30 分钟内、同模式、同任务且部分完成的 run；命中则复用已完成子任务，只跑剩余部分。 | 
+| `maxTokens` | number | `0` | `0..128000` | 子智能体每次请求的最大输出 token；0 = 继承父级/不覆盖。可给单个 `AgentEntry.maxTokens` 设置更高值覆盖。 |
 | `agents` | array\<[AgentEntry](#agententry-自定义子智能体)> | 内置 `reviewer`、`researcher`、`research-merger` | 需 `name` 非空；`String` 化各字段 | 自定义子智能体清单。`list-subagents` 返回其 name/provider/model/description；`orchestrate` 中 `task.agent` / 顶层 `agent` / `supervisorAgent` / `reviewers` 按 name 解析。 |
 
 #### `OrchPreset`（配方）字段
@@ -123,6 +124,7 @@
 | `provider` | provider；留空 = 继承 DSH 默认模型。 |
 | `model` | model；留空 = 继承 DSH 默认模型。 |
 | `reasoningEffort` | 可选的模型推理强度（provider 定义的不透明字符串，如 `low` / `medium` / `high`）；留空 = 使用 provider/model 默认值。即使 provider/model 留空，也可以单独覆盖默认模型的 effort。 |
+| `maxTokens` | 该子智能体每次请求的最大输出 token；0/缺省 = 使用编排级 `orch.maxTokens` 或继承父级。 |
 | `description` | 展示给模型的用途说明。 |
 | `systemPrompt` | 子智能体的系统提示词（persona）。 |
 | `tools.allow` | 可选工具白名单；非空时只允许这些宿主工具。provider 不支持工具裁剪时会在启动前剥离。 |
@@ -239,6 +241,7 @@
     "renderTotalLimit": 60000,
     "maxDepth": 0,
     "autoResume": true,
+    "maxTokens": 0,
     "presets": [
       {
         "name": "code-review",
@@ -265,6 +268,7 @@
         "provider": "openai",
         "model": "gpt-4o",
         "reasoningEffort": "high",
+        "maxTokens": 16000,
         "description": "需求拆解与实现计划专家。",
         "systemPrompt": "你是资深技术主管：把目标拆解为可执行阶段，给出实现顺序与验收标准。",
         "fallbacks": [
@@ -277,9 +281,10 @@
 ```
 
 说明：`concurrency`（1..32）、`maxAgents`（1..64）、`stageRetry`（0..5）、
-`globalConcurrency`（0..64）、`maxDepth`（0..8）均在钳制范围内；`provider: ""` 表示自动选第一个可用提供方；
+`globalConcurrency`（0..64）、`maxDepth`（0..8）、`maxTokens`（0..128000）均在钳制范围内；`provider: ""` 表示自动选第一个可用提供方；
 子智能体 `provider`/`model` 留空即继承 DSH 默认模型。
 `reasoningEffort` 同样可以独立配置；设置页提供 `low` / `medium` / `high` 常用选项，也允许填写 provider-specific 值。
+`maxTokens = 0` 表示不覆盖（继承父级/提供方默认）；单个子智能体可设置 `AgentEntry.maxTokens` 覆盖编排级默认值。
 
 ---
 
@@ -290,7 +295,7 @@
 | ha.enabled | true | — | — |
 | ha.backups | [] | — | — |
 | ha.cooldownMs | 300000 | 1000 | — |
-| ha.threshold | 1 | 1 | — |
+| ha.threshold | 3 | 1 | — |
 | ha.codes | [] | — | — |
 | ha.persistSelection | false | — | — |
 | ha.steerOnStop | true | — | — |
@@ -310,6 +315,7 @@
 | orch.renderTotalLimit | 60000 | 0 | 400000 |
 | orch.maxDepth | 0 | 0 | 8 |
 | orch.autoResume | true | — | — |
+| orch.maxTokens | 0 | 0 | 128000 |
 | orch.presets | [] | — | — |
 | orch.agents | [reviewer, researcher, research-merger] | 每项 name 必填 | — |
 | debug.enabled | false | — | — |
