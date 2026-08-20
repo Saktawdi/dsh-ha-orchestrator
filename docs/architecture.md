@@ -1,6 +1,6 @@
 # dsh-ha-orchestrator 架构文档
 
-> 版本：v0.12.2（对齐当前 `src/` 代码快照）
+> 版本：v0.12.3（对齐当前 `src/` 代码快照）
 > 范围：基于仓库实际代码（`src/index.ts`、`src/config.ts`、`src/ha-core.ts`、`src/orch-runner.ts`、
 >       `src/language.ts`、`src/remote.ts`、`src/types.ts`、`package.json`、`cordis.patch.yml`）编写，
 >      说明本插件的静态 Cordis 装配方式、模块职责、三条关键数据流、服务契约与设计原则。
@@ -211,9 +211,9 @@ newRunId -> acquireOrchSlot(全局并发信号量)
 
 - **服务键**：`ctx.haOrchestrator`——`HaOrchestratorRpc extends TypertRemoteService`
   （`super(ctx, 'haOrchestrator')`），客户端经 `ctx.remote.haOrchestrator.<method>` 调用；
-  19 个 Remote 方法经 `remote.ts` 装配成 marker：`stateGet` `stateReload` `stateSet`
+  20 个 Remote 方法经 `remote.ts` 装配成 marker：`stateGet` `stateReload` `stateSet`
   `stateExport` `stateImport` `modelsList` `agentsGenerate` `haReset` `haStatus` `haProbeNow`
-  `haSuggestBackups` `orchRuns` `orchActive` `diagnostics` `orchListPresets` `orchSavePreset`
+  `haSuggestBackups` `orchRuns` `orchRecent` `orchActive` `diagnostics` `orchListPresets` `orchSavePreset`
   `orchDeletePreset` `debugLogs` `debugClear`。
 - **ctx.tools 注册**：`orchestrate`（auto 编排工具，参数含 mode/agent/supervisorAgent/preset/
   resume/reviewRounds/reviewers/budgetAgents/tasks/mergeInstructions/concurrency，输出 `{summary, runs, runId}`）与

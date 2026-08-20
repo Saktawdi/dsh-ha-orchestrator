@@ -64,8 +64,9 @@ Phase 0「HA 持久化恢复与事件流集成测试 / 编排 execute 集成」�
     object-root `outputSchema`、`maxDepth`、`maxTokens` 透传、内置调研 agent，以及 run 工件/并发写入的回归行为。
 12. **resume 增强回归** — `/ha-orch-resume <runId>` 命令、`max-tokens` 视为可用输出（`isUsableRunStatus`）、
     自动续跑只锁定最新匹配 run、显式 resume 无 tasks 时回退历史任务定义、命令 `rawInput`/`agent`/`signal` 载荷。
+13. **性能与轻量历史** — `orchRecent` RPC（按会话血缘在 host 侧过滤、剥离 prompt/output）、轻量 Run 内存热集与磁盘合并。
 
-**全量合计 = 143 单测 + 76 集成 = 219 例。**
+**全量合计 = 143 单测 + 77 集成 = 220 例。**
 
 ---
 
@@ -175,7 +176,7 @@ CI 不执行 `npm publish`；发布动作由后述发布流程人工/带环境�
 ## 发布前后核对清单
 
 - [ ] `npm run prepublishOnly` 全绿（typecheck / build / check / test / verify 无一失败）。
-- [ ] `npm test` 全量 219 例通过（143 单测 + 76 集成）。
+- [ ] `npm test` 全量 220 例通过（143 单测 + 77 集成）。
 - [ ] `npm run verify` 输出 `[verify] 6 checks passed`。
 - [ ] `npm pack` 产物含 `lib/ src/ .language/ cordis.patch.yml docs/ README* CHANGELOG.md LICENSE`。
 - [ ] 版本号与 CHANGELOG 一致，`git tag v<version>` 已推送。

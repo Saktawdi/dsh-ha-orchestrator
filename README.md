@@ -1,10 +1,10 @@
 ![HA Orchestrator —— 模型故障恢复与多智能体编排](docs/hero-banner.png)
 
 <p align="center">
-  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.2-4d6bfe?style=flat-square" alt="版本" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.3-4d6bfe?style=flat-square" alt="版本" height="20"></a>
   <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="平台" height="20"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="许可证 MIT" height="20"></a>
-  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-219%20passing-2ea44f?style=flat-square" alt="测试" height="20"></a>
+  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-220%20passing-2ea44f?style=flat-square" alt="测试" height="20"></a>
   <a href="docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="编排模式" height="20"></a>
   <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin" height="20"></a>
 </p>
