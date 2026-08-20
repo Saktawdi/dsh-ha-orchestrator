@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.12.3] - 2026-08-18
+
+### Performance
+- 子代理悬浮面板关闭时不再持续拉取完整配置、run 历史和 sessions 目录，仅低频读取轻量活动状态；打开后按当前会话血缘加载并降低刷新频率。
+- 新增 `orchRecent` 轻量 RPC，历史列表不再传输任务 prompt 与子代理完整 output；完整 run 内存热集从 50 条收紧到 20 条，磁盘记录仍保留 200 条。
+- 子代理 token 统计取消自动打开冷会话，并将流式 session 更新节流到最多约每秒一次，减少大量子代理同时输出时的主线程扫描与内存驻留。
+
+### 工程门禁
+- 测试 **219 → 220**（新增 `orchRecent` 轻量历史与会话过滤测试），全量通过。
+
 ## [0.12.2] - 2026-08-18
 
 ### Added

@@ -242,7 +242,7 @@ test('装配：工具/上下文注入/事件/RPC 服务全部注册', async () =
   const rpc = ctx.get('haOrchestrator')
   assert.ok(rpc, 'RPC 服务已注册')
   assert.equal(rpc.constructor.name, 'HaOrchestratorRpc')
-  for (const m of ['stateGet', 'stateReload', 'stateSet', 'modelsList', 'agentsGenerate', 'haReset', 'debugLogs', 'debugClear']) {
+  for (const m of ['stateGet', 'stateReload', 'stateSet', 'modelsList', 'agentsGenerate', 'haReset', 'orchRecent', 'debugLogs', 'debugClear']) {
     assert.equal(typeof rpc[m], 'function', 'RPC 方法: ' + m)
   }
 
@@ -1044,6 +1044,27 @@ test('回归：orchRuns() RPC 合并磁盘历史（重启后新实例仍可见�
   assert.ok(runs.length >= 1, '合并磁盘历史: ' + JSON.stringify(runs.map((r) => r.runId)))
   assert.ok(runs.some((r) => r.runId === res.runId), '包含落盘的 runId')
   assert.ok(runs.every((r) => r.mode && r.startedAt !== undefined), '记录字段齐备')
+})
+
+test('性能：orchRecent() 返回按会话过滤的轻量历史，不携带 prompt/output', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't1', prompt: 'very large prompt ' + 'p'.repeat(2000) }],
+  }, { id: 'session-a' })
+  await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    tasks: [{ id: 't2', prompt: 'other session' }],
+  }, { id: 'session-b' })
+
+  const rpc = ctx.get('haOrchestrator')
+  const recent = await rpc.orchRecent({ limit: 10, sessionIds: ['session-a'] })
+  assert.equal(recent.runs.length, 1)
+  assert.equal(recent.runs[0].sessionId, 'session-a')
+  assert.equal('tasks' in recent.runs[0], false, '轻量记录不携带任务 prompt')
+  assert.equal('output' in recent.runs[0].runs[0], false, '轻量子任务不携带完整输出')
+  assert.ok(recent.runs[0].runs[0].id)
 })
 
 test('Phase2 自动续跑：重试相同任务时复用部分完成的 run，只跑未完成子任务', async () => {

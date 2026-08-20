@@ -168,7 +168,7 @@ newRunId -> acquireOrchSlot(全局并发信号量)
 | --- | --- | --- | --- |
 | `dsh-ha-orchestrator.config.json`（+ `.backup.json`） | 完整配置 | 写前把旧配置备份到 backup，再写主文件；`persistConfig` 记录 `activeStorageDir` + 诊断 | —— |
 | `dsh-ha-orchestrator.ha.json` | HA 运行态：隔离/失败计数/游标/历史 | `scheduleHaPersist` 防抖 500ms；重置后也可能写入空状态 | 历史 50 条 |
-| `dsh-ha-orchestrator.runs.jsonl` | 每次 orchestrate 一条 run 记录 | JSONL 读-追加-修剪-写 | 磁盘 200 条 / 内存 50 条 |
+| `dsh-ha-orchestrator.runs.jsonl` | 每次 orchestrate 一条 run 记录 | JSONL 读-追加-修剪-写 | 磁盘 200 条 / 完整内存热集 20 条；UI 使用无 prompt/output 的轻量历史缓存 |
 | `dsh-ha-orchestrator.run-<runId>.md` | 单次 run 的完整 Markdown 工件 | 与 run 写入队列串行写入；当前不自动修剪 | 每个 run 一份 |
 
 - **storageDirs 查找顺序**：
