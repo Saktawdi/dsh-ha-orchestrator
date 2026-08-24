@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.12.4] - 2026-08-24
+
+### Security / Robustness（复审修复）
+
+- **R1 · supervisor reviewers 截断**：`reviewers` 名单现与 tasks 同受 `maxAgents` 钳制，超出部分截断并记 `orch.reviewers.truncate` 调试日志——此前模型可传超长名单并行拉起子智能体，绕过 maxAgents/concurrency 两道限制（`budgetAgents=0` 时无兜底）。
+- **N2 · 回退链错误分类与系统性熔断**：新增纯函数 `isFallbackEligibleError`（取消/AbortError/预算耗尽/请求构造缺陷不再触发换模型回退）；同一 run 内相同错误消息整链失败累计达阈值（3）后判定为服务级系统性故障，后续任务命中同一错误直接失败、不再烧回退链，避免"服务故障 × 回退候选数 × 任务数"的请求量放大。run 结束（`removeActiveRun`）与插件停止时回收计数。
+- **N1 · orchRecent 轻量历史缓存失效**：`runSummaryCache` 引入 30s TTL 兜底磁盘被外部修改（同工作区第二实例/手动编辑/回滚）造成的陈旧；`stateReload` RPC 现同步失效缓存，用户显式重载可立即感知外部改动。
+- **R4 · client slots 生命周期**：`lib/client.js` 全部 4 处 `slots.inject`（settings.section / tool.view.cordis / tool.call.toolview / shell.overlay）的 dispose 句柄统一入列，`ctx.effect` 可用时挂接终止清理，插件热更新/卸载不再残留 UI 注册（zombie UI）。
+
+### Fixed
+
+- 悬浮子代理面板改为事件驱动刷新（会话变化即时更新，不再等轮询周期）；列表行 token 用量直接消费会话投影，不再自动打开冷会话；面板关闭时保留 3s 低频 FAB 状态点轮询，打开后恢复 1.8s 活动视图刷新。
+
+### 工程门禁
+
+- 测试 **220 → 227**（新增：reviewers 截断、回退链系统性熔断、orchRecent 缓存失效回归 + `isFallbackEligibleError` 单测 4 例），全量通过。
+- 清理工作区 11 个调研残留文件（第三方仓库 GitHub API 缓存与本仓库文件副本，未跟踪、未入包）。
+
 ## [0.12.3] - 2026-08-18
 
 ### Performance

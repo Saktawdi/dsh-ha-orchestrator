@@ -1,10 +1,10 @@
 ![HA Orchestrator — model recovery and multi-agent orchestration](docs/hero-banner.png)
 
 <p align="center">
-  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.3-4d6bfe?style=flat-square" alt="Version" height="20"></a>
+  <a href="https://github.com/Saktawdi/dsh-ha-orchestrator/releases"><img src="https://img.shields.io/badge/version-v0.12.4-4d6bfe?style=flat-square" alt="Version" height="20"></a>
   <a href="https://github.com/deepseek-ai/dsh"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-4d6bfe?style=flat-square" alt="Platform" height="20"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License: MIT" height="20"></a>
-  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-220%20passing-2ea44f?style=flat-square" alt="Tests" height="20"></a>
+  <a href="docs/verification.md"><img src="https://img.shields.io/badge/tests-227%20passing-2ea44f?style=flat-square" alt="Tests" height="20"></a>
   <a href="docs/configuration.md"><img src="https://img.shields.io/badge/orchestration%20modes-5-6f42c1?style=flat-square" alt="Orchestration modes" height="20"></a>
   <a href="https://awesome-dsh-plugin.com"><img src="https://awesome-dsh-plugin.com/badge.svg" alt="Awesome DSH Plugin" height="20"></a>
 </p>
@@ -198,7 +198,7 @@ During a conversation you also get two live views:
 ## Notes
 
 - Config and HA state are looked up in the session workspace / `DSH_HOME`, then the sandbox `workspace-write` root. Config writes report a persistence diagnostic if neither location is available. Run records and Markdown run artifacts additionally fall back to the fs service's default cwd when no directory candidate exists.
-- HA runtime state (quarantine, failure counters, rotation cursors, switch history) is persisted to `dsh-ha-orchestrator.ha.json` with a 500 ms debounce and restored on startup. Orchestrate runs are recorded to `dsh-ha-orchestrator.runs.jsonl` (up to 200 disk records / 50 in memory) and also written as `dsh-ha-orchestrator.run-<runId>.md` artifacts containing the full subtask outputs.
+- HA runtime state (quarantine, failure counters, rotation cursors, switch history) is persisted to `dsh-ha-orchestrator.ha.json` with a 500 ms debounce and restored on startup. Orchestrate runs are recorded to `dsh-ha-orchestrator.runs.jsonl` (up to 200 disk records / 20 in memory) and also written as `dsh-ha-orchestrator.run-<runId>.md` artifacts containing the full subtask outputs.
 - Run records and artifacts may contain task prompts and model outputs; keep the workspace readable only by trusted users/processes.
 - All `/ha` and `/orchestrate` slash commands are listed in the [Commands](#commands) section above.
 

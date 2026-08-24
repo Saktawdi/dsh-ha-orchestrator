@@ -148,6 +148,9 @@ export declare function resolveMode(mode: string | null | undefined): Orchestrat
 export declare function buildRunPrompt(task: TaskLike, extra: string | null | undefined, mergedPrefix: string): string;
 export declare function buildSubagentRequest(task: TaskLike, extra: string | null | undefined, agentDef: AgentDefLike | null | undefined, mergedPrefix: string, parent: unknown, signal: AbortSignal | null | undefined, defaultMaxTokens?: number): SubagentRequestLike;
 export declare function isUsableRunStatus(status: unknown): boolean;
+export declare function isFallbackEligibleError(e: unknown, signal?: {
+    aborted?: boolean;
+} | null): boolean;
 export declare function normalizeRunResult(task: TaskLike, agentDef: AgentDefLike | null | undefined, res: SubagentResultLike): RunResultLike;
 export declare function normalizeFinalRuns(runs: RunResultLike[]): RunResultLike[];
 export declare function poolRun<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>, errorRun?: (item: T, error: unknown, index: number) => R): Promise<R[]>;

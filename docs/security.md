@@ -220,7 +220,7 @@
 1. 保持会话 workspace 与 DSH 数据目录**仅对可信进程可读写**，尤其因为 `runs.jsonl` 和 Markdown 工件明文存全量 run 内容。
 2. 若担心提示注入，可关闭上下文注入（`ctx.enabled = false`），模型将不获得插件引导文本。
 3. 若无需在配置期间记录编排输出，可审慎清理 `dsh-ha-orchestrator.runs.jsonl` 与
-  `dsh-ha-orchestrator.run-<runId>.md`；JSONL 有内存/磁盘容量上限（`RUN_MEM_CAP=50`、
+  `dsh-ha-orchestrator.run-<runId>.md`；JSONL 有内存/磁盘容量上限（`RUN_MEM_CAP=20`、
   `RUN_FILE_CAP=200`），Markdown 工件则需手动清理。
 4. 升级宿主或锁定新 peerDependencies 版本后，重新跑 `npm run verify` 与回归测试，确认工具注册、
    LLM 拦截、子智能体契约仍兼容。

@@ -76,7 +76,7 @@ dsh-ha-orchestrator/
 
 | 模块 | 职责 | DSH 依赖 |
 | --- | --- | --- |
-| `src/index.ts` | 插件装配唯一持 `ctx` 层：HA 事件流（agent/request / request-error / error）、错误分类、两层熔断、探测恢复、steer 续跑；编排工具 `orchestrate` / `list-subagents`；systemPrompt 上下文注入（order 40）；`ctx.haOrchestrator` RPC 服务（19 个方法）；`/ha` 与 `/orchestrate` 命令；语言跟随；配置/HA/run 持久化；`inject` 声明 | 全量（经 `getService`） |
+| `src/index.ts` | 插件装配唯一持 `ctx` 层：HA 事件流（agent/request / request-error / error）、错误分类、两层熔断、探测恢复、steer 续跑；编排工具 `orchestrate` / `list-subagents`；systemPrompt 上下文注入（order 40）；`ctx.haOrchestrator` RPC 服务（20 个方法）；`/ha` 与 `/orchestrate` 命令；语言跟随；配置/HA/run 持久化；`inject` 声明 | 全量（经 `getService`） |
 | `src/config.ts` | 配置 schema（`Config` / `HaConfig` / `OrchConfig` 等）、`defaultConfig` 默认值、`sanitizeConfig(patch, base)` 校验合并（钳制数值/规整布尔/过滤结构），`MIN_COOLDOWN_MS` 常量 | 无 |
 | `src/ha-core.ts` | HA 状态机纯函数：隔离/失败计数/滑动窗口/冷却/备用轮换游标/重试预算/精确与通配隔离判定/切换历史/序列化（`serializeHaState` / `deserializeHaState`）；所有时序操作接受可注入 `now` 便于测试 | 无（消费最小 `HaCfgLike`） |
 | `src/orch-runner.ts` | 编排纯逻辑：`poolRun` 并发池（保序 + 单任务异常隔离）、`resolveConcurrency` / `resolveMode` / `truncateTasks`、`appendPipelineCarry`（pipeline 前段输出作下一段上下文）、`buildSupervisorPrompt`（supervisor/map-reduce/merge 合成）、`buildSubagentRequest` / `normalizeRunResult` / `normalizeFinalRuns`、`summarizeRuns` / `renderRunOutput`、`findUnknownAgents` / `resolveAgentDef` / `resolveSubagentFallbacks` | 无 |

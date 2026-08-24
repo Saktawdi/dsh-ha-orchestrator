@@ -294,6 +294,22 @@ export function isUsableRunStatus(status: unknown): boolean {
   return s === 'completed' || s === 'max-tokens'
 }
 
+// 判定一次子智能体调用异常是否值得尝试下一个回退候选。
+// 与模型路由无关的错误（显式中止编排、取消、请求构造缺陷）换模型重试没有
+// 意义，只会放大请求量；应直接抛出，交由上层按任务隔离。
+export function isFallbackEligibleError(e: unknown, signal?: { aborted?: boolean } | null): boolean {
+  if (signal && signal.aborted) return false
+  if (!e) return true
+  const err = e as { isolate?: unknown; name?: unknown; message?: unknown }
+  // 预算耗尽等显式中止错误由编排层统一处理，不参与回退
+  if (err.isolate === false) return false
+  if (String(err.name || '') === 'AbortError') return false
+  const msg = String(err.message || e)
+  // 本插件自产的固定错误串（非 i18n，稳定可匹配）：缺取消信号属请求构造缺陷
+  if (msg.indexOf('runOne: 缺少取消信号') >= 0) return false
+  return true
+}
+
 // 将提供方运行结果归一化为统一 run 结构。
 // 结构化输出（outputSchema 命中）以 '[structured] {json}' 行内嵌到 output 开头：
 // 下游 merge/渲染/runs.jsonl/工件全部自然携带，避免独立字段的 JSON 边界类型问题。

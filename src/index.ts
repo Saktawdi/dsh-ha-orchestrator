@@ -64,6 +64,7 @@ import {
   truncateTasks,
   sameTaskList,
   isUsableRunStatus,
+  isFallbackEligibleError,
 } from './orch-runner.js'
 import type { RunResultLike, TaskLike, AgentDefLike, OrchestrateMode } from './orch-runner.js'
 import { decorateRemoteMethod, runInitializers } from './remote.js'
@@ -274,7 +275,38 @@ async function apply(ctx: Context): Promise<void> {
   // run 落盘串行队列：避免并发读-改-写互相覆盖
   let runPersistTail: Promise<void> = Promise.resolve()
   // UI 轻量历史缓存：只保留元数据，不保留 prompt/output，避免客户端轮询反复解析完整 JSONL。
+  // 进程内落盘由 recordRun 增量维护；TTL 兜底磁盘文件被外部修改（同工作区第二实例/
+  // 手动编辑/回滚）造成的陈旧；stateReload 提供立即失效入口。
+  const RUN_SUMMARY_TTL_MS = 30 * 1000
   let runSummaryCache: RunRecordSummary[] | null = null
+  let runSummaryCacheAt = 0
+  function invalidateRunSummaryCache(): void {
+    runSummaryCache = null
+    runSummaryCacheAt = 0
+  }
+  // 系统性回退熔断：同一 run 内“整条回退链走完仍失败”的相同错误消息累计达到阈值后，
+  // 判定为服务级/基础设施故障（换模型治不了）：后续任务命中同一错误直接失败，
+  // 不再烧回退链，避免 服务故障 × 回退候选数 × 任务数 的请求量放大。
+  const SYSTEMIC_ERROR_THRESHOLD = 3
+  const systemicErrorsByRun = new Map<string, Map<string, number>>()
+  function recordEscapedRunError(runId: string, e: unknown): void {
+    if (!runId) return
+    const msg = String((e && (e as Error).message) || e)
+    if (!msg) return
+    let counts = systemicErrorsByRun.get(runId)
+    if (!counts) {
+      counts = new Map<string, number>()
+      systemicErrorsByRun.set(runId, counts)
+    }
+    counts.set(msg, (counts.get(msg) || 0) + 1)
+  }
+  function isSystemicRunError(runId: string, e: unknown): boolean {
+    if (!runId) return false
+    const counts = systemicErrorsByRun.get(runId)
+    if (!counts) return false
+    const msg = String((e && (e as Error).message) || e)
+    return (counts.get(msg) || 0) >= SYSTEMIC_ERROR_THRESHOLD - 1
+  }
   // 已排程的探测定时器（key -> handle），防止同一隔离键重复调度
   const pendingProbes = new Map<string, unknown>()
   // 插件停止标记：dispose 后不再排程探测/等待全局并发槽，避免残留活动写已停上下文
@@ -592,12 +624,13 @@ async function apply(ctx: Context): Promise<void> {
     }
   }
   async function readRunSummariesFromDisk(): Promise<RunRecordSummary[]> {
-    if (runSummaryCache) return runSummaryCache
+    if (runSummaryCache && now() - runSummaryCacheAt < RUN_SUMMARY_TTL_MS) return runSummaryCache
     try {
       let text = await readStorageText(RUNS_FILE)
       if (text == null) text = await readStorageText(LEGACY_RUNS_FILE)
       if (text == null) {
         runSummaryCache = []
+        runSummaryCacheAt = now()
         return runSummaryCache
       }
       const out: RunRecordSummary[] = []
@@ -613,9 +646,11 @@ async function apply(ctx: Context): Promise<void> {
         const bt = String(b.startedAt)
         return at < bt ? 1 : (at > bt ? -1 : 0)
       }).slice(0, RUN_FILE_CAP)
+      runSummaryCacheAt = now()
       return runSummaryCache
     } catch (e) {
       runSummaryCache = []
+      runSummaryCacheAt = now()
       return runSummaryCache
     }
   }
@@ -716,6 +751,8 @@ async function apply(ctx: Context): Promise<void> {
   function removeActiveRun(runId: string): void {
     const i = state.activeRuns.findIndex((r) => r.runId === runId)
     if (i >= 0) state.activeRuns.splice(i, 1)
+    // run 结束：回收系统性错误计数，防止长期运行下 Map 无限增长
+    systemicErrorsByRun.delete(runId)
   }
   function activeRunsSnapshot(): ActiveRunView[] {
     return state.activeRuns.map((run) => ({
@@ -1465,7 +1502,21 @@ async function apply(ctx: Context): Promise<void> {
         })
       } catch (e) {
         lastError = e
-        if (signal.aborted || i >= attempts.length - 1) throw e
+        // 三类错误不再烧回退链：系统性故障（同错误已重复整链失败）、与模型路由
+        // 无关的错误（取消/预算/构造缺陷）、以及最后一个候选（链已走完）。
+        const systemic = isSystemicRunError(runId, e)
+        if (signal.aborted || i >= attempts.length - 1 || systemic || !isFallbackEligibleError(e, signal)) {
+          if (!signal.aborted && systemic) {
+            recordEscapedRunError(runId, e)
+            debugLog('warn', 'orch.task.fallback.skip', '同错误已重复整链失败，判定系统性故障，跳过回退直接失败', {
+              label: String(task.label || task.id || 'task'),
+              message: String((e && (e as Error).message) || e),
+            })
+          } else if (!signal.aborted && i >= attempts.length - 1) {
+            recordEscapedRunError(runId, e)
+          }
+          throw e
+        }
         debugLog('warn', 'orch.task.fallback', '子智能体调用失败，尝试角色回退模型', {
           label: String(task.label || task.id || 'task'),
           agent: attemptDef ? String(attemptDef.name || '') : '',
@@ -1909,7 +1960,13 @@ async function apply(ctx: Context): Promise<void> {
             const merged = summarize(runs.concat(resumeCompleted))
             const instruction = String(mergeInstructions || t('orch.mergeDefault'))
             const supDef = resolveAgentDef(args.supervisorAgent) || resolveAgentDef(presetSupervisorAgent) || defaultDef
-            const reviewers = Array.isArray(args.reviewers) ? args.reviewers.filter((n) => !!n).map((n) => String(n)) : []
+            // reviewers 与 tasks 同受 maxAgents 钳制：名单超长时截断，防止绕过
+            // maxAgents/concurrency 限制并行拉起超量子智能体（budgetAgents=0 时无兜底）
+            const reviewersRaw = Array.isArray(args.reviewers) ? args.reviewers.filter((n) => !!n).map((n) => String(n)) : []
+            const reviewers = reviewersRaw.slice(0, maxAgents)
+            if (reviewersRaw.length > reviewers.length) {
+              debugLog('warn', 'orch.reviewers.truncate', 'reviewers 超过 maxAgents，已截断', { total: reviewersRaw.length, kept: reviewers.length })
+            }
             // 多评审者：并行评审（各自独立 agent），输出并入综合上下文
             let reviewContext = merged
             if (reviewers.length > 0) {
@@ -2866,6 +2923,8 @@ async function apply(ctx: Context): Promise<void> {
     }
     // 重新加载：从磁盘重新读取持久化配置并应用（含语言跟随/工具重建），返回最新状态
     async stateReload(): Promise<StateSnapshot & Record<string, unknown>> {
+      // 同步失效轻量历史缓存：用户显式重载视为“磁盘可能被外部改动”，下次 orchRecent 重建
+      invalidateRunSummaryCache()
       const agentsBefore = JSON.stringify((state.config.orch || {}).agents || [])
       try {
         await loadPersistedConfig()
@@ -3210,6 +3269,7 @@ async function apply(ctx: Context): Promise<void> {
   ctx.effect(() => () => {
     pluginDisposed = true
     pendingProbes.clear()
+    systemicErrorsByRun.clear()
     // 唤醒所有等待全局并发槽的 orchestrate：避免其 Promise 永久挂起
     //（醒来后执行会在已停上下文上失败并走既有 error 留痕路径）
     while (orchWaiters.length > 0) {

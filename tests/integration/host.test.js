@@ -110,6 +110,9 @@ function makeEnv() {
       ctx.maxActiveSubagents = Math.max(ctx.maxActiveSubagents || 0, ctx.activeSubagents)
       try {
         const label = request.label
+        // 系统性故障模拟：设置后所有 start 一律抛同一消息（服务级故障，与 label 无关），
+        // 供回退链熔断（isSystemicRunError）回归用
+        if (state.subagentStartErrorMessage) throw new Error(state.subagentStartErrorMessage)
         const remaining = subagentFailures.get(label) || 0
         if (remaining > 0) {
           subagentFailures.set(label, remaining - 1)
@@ -1914,4 +1917,84 @@ test('L2 /orchestrate runs 在 fs 不可用时回退内存', async () => {
   assert.ok(def, '/orchestrate 命令已注册')
   const list = await def.handler({ input: 'runs' })
   assert.ok(list.text.indexOf(res.runId) >= 0, 'fs 不可用时命令仍能列出内存 run')
+})
+
+test('R1 supervisor reviewers 截断：名单超过 maxAgents 时只保留前 maxAgents 个', async () => {
+  const { ctx } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  // maxAgents=2：内置 reviewer/researcher/research-merger 三个评审者只保留前两个
+  await rpc.stateSet({ patch: { orch: { maxAgents: 2 } } })
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'supervisor',
+    reviewers: ['reviewer', 'researcher', 'research-merger'],
+    tasks: [{ id: 'm1', prompt: 'P1' }],
+  }, { id: 'a1' })
+
+  const reviewerIds = res.runs.map((r) => r.id).filter((id) => id.indexOf('reviewer-') === 0)
+  assert.equal(reviewerIds.length, 2, '只保留前 2 个评审者: ' + res.runs.map((r) => r.id).join(','))
+  assert.ok(res.runs.some((r) => r.id === 'reviewer-1') && res.runs.some((r) => r.id === 'reviewer-2'))
+  assert.equal(res.runs.some((r) => r.id === 'reviewer-3'), false, '第 3 个评审者被截断')
+  assert.ok(res.runs.some((r) => r.id === 'supervisor'), 'supervisor 综合仍执行')
+})
+
+test('N2 回退链熔断：同错误整链失败达到阈值后，后续任务跳过回退直接失败', async () => {
+  const { ctx, state } = makeEnv()
+  await mountPlugin(ctx)
+  const rpc = ctx.get('haOrchestrator')
+
+  // 无自定义角色的任务沿用主 HA backups 作为回退链：1 个备用 -> 每任务最多 2 次调用
+  await rpc.stateSet({ patch: { ha: { backups: [{ label: 'b1', provider: 'p1', model: 'm1' }] } } })
+  // 服务级故障：所有 start 一律抛同一消息（与任务无关），换模型治不了
+  state.subagentStartErrorMessage = 'subagents service unavailable'
+  const res = await toolExec(ctx, 'orchestrate', {
+    mode: 'fanout',
+    concurrency: 1, // 串行执行，保证错误计数按任务顺序累积
+    tasks: [
+      { id: 't1', prompt: 'P1' },
+      { id: 't2', prompt: 'P2' },
+      { id: 't3', prompt: 'P3' },
+      { id: 't4', prompt: 'P4' },
+    ],
+  }, { id: 'a1' })
+
+  assert.equal(res.runs.length, 4)
+  assert.ok(res.runs.every((r) => r.status === 'error'), '服务故障下全部任务失败')
+  // t1/t2 烧完整链（主候选 + 备用各 1 次），t3/t4 触发系统性熔断只调 1 次：2+2+1+1 = 6
+  assert.equal(ctx.subagentCalls.length, 6, '熔断后不再烧回退链: ' + ctx.subagentCalls.length)
+  assert.ok(res.runs.every((r) => r.output.indexOf('subagents service unavailable') >= 0), '错误消息保留')
+})
+
+test('N1 orchRecent 缓存失效：TTL 内感知不到外部修改，stateReload 后重建', async () => {
+  const envA = makeEnv()
+  await mountPlugin(envA.ctx)
+  await toolExec(envA.ctx, 'orchestrate', { mode: 'fanout', tasks: [{ id: 't1', prompt: 'P1' }] }, { id: 'session-x' })
+  await new Promise((resolve) => setTimeout(resolve, 250)) // 等 run 落盘
+
+  // 新实例（内存为空）共享同一磁盘：首次 orchRecent 构建缓存
+  const envB = envWithSharedFs(envA.fs)
+  await mountPlugin(envB.ctx)
+  const rpc = envB.ctx.get('haOrchestrator')
+  const before = await rpc.orchRecent({ limit: 10, sessionIds: [] })
+  assert.equal(before.runs.length, 1, '初始只有 1 条历史')
+
+  // 外部修改磁盘（模拟同工作区第二实例/手动编辑写入新 run）
+  const runsPath = 'C:/work/dsh-ha-orchestrator.runs.jsonl'
+  const text = envA.fs.store.get(runsPath)
+  assert.ok(text, 'runs.jsonl 已落盘')
+  const external = JSON.stringify({
+    runId: 'r-external', mode: 'fanout', agent: 'session-x',
+    startedAt: '2026-08-23T10:00:00.000Z', aborted: false,
+    runs: [], tasks: [], summary: 'external edit',
+  })
+  envA.fs.store.set(runsPath, external + '\n' + text)
+
+  const cached = await rpc.orchRecent({ limit: 10, sessionIds: [] })
+  assert.equal(cached.runs.length, 1, 'TTL 内仍返回缓存，不读磁盘')
+
+  await rpc.stateReload()
+  const after = await rpc.orchRecent({ limit: 10, sessionIds: [] })
+  assert.equal(after.runs.length, 2, 'stateReload 失效缓存后重建可见外部修改')
+  assert.ok(after.runs.some((r) => r.runId === 'r-external'), '包含外部写入的 runId')
 })

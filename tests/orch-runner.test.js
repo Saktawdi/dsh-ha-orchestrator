@@ -23,6 +23,7 @@ import {
   appendPipelineCarry,
   pipelineStageBlock,
   buildSupervisorPrompt,
+  isFallbackEligibleError,
 } from '../lib/orch-runner.js'
 
 // ---------------------------------------------------------------------------
@@ -545,4 +546,33 @@ test('normalizeRunResult: structured 以 [structured] 行内嵌 output 开头', 
   const r2 = normalizeRunResult({ id: 't', prompt: 'p' }, null, { output: [{ type: 'text', text: '正文' }] })
   assert.equal(r2.output, '正文')
   assert.equal('structured' in r2, false)
+})
+
+// ---------------------------------------------------------------------------
+// isFallbackEligibleError
+// ---------------------------------------------------------------------------
+
+test('isFallbackEligibleError：普通模型/传输错误可回退', () => {
+  assert.equal(isFallbackEligibleError(new Error('upstream 503')), true)
+  assert.equal(isFallbackEligibleError(new Error('rate limited')), true)
+  assert.equal(isFallbackEligibleError('string error'), true)
+  assert.equal(isFallbackEligibleError(null), true)
+})
+
+test('isFallbackEligibleError：取消/信号中止不回退', () => {
+  assert.equal(isFallbackEligibleError(new Error('x'), { aborted: true }), false)
+  const abortErr = new Error('This operation was aborted')
+  abortErr.name = 'AbortError'
+  assert.equal(isFallbackEligibleError(abortErr), false)
+})
+
+test('isFallbackEligibleError：预算耗尽（isolate=false）不回退', () => {
+  const budgetErr = new Error('预算耗尽')
+  budgetErr.isolate = false
+  assert.equal(isFallbackEligibleError(budgetErr), false)
+  assert.equal(isFallbackEligibleError(budgetErr, { aborted: false }), false)
+})
+
+test('isFallbackEligibleError：请求构造缺陷（缺取消信号）不回退', () => {
+  assert.equal(isFallbackEligibleError(new Error('runOne: 缺少取消信号（signal），子智能体提供方需要真实 AbortSignal')), false)
 })
